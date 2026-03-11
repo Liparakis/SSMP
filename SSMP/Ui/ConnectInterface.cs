@@ -1302,24 +1302,19 @@ internal class ConnectInterface {
         string username
     ) {
         var discoveryToken = Guid.NewGuid();
-
-        var bindTask = Task.Run(() => {
-                var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-                socket.Bind(new IPEndPoint(IPAddress.Any, 26960));
-                return socket;
-            }
-        );
-        yield return new WaitUntil(() => bindTask.IsCompleted);
-
-        if (bindTask.IsFaulted) {
+        
+        Socket hostGameSocket;
+        try {
+            hostGameSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            hostGameSocket.Bind(new IPEndPoint(IPAddress.Any, 26960));
+        } catch (Exception ex) {
             Logger.Error(
-                $"ConnectInterface: Socket bind task faulted: {bindTask.Exception?.GetBaseException().Message}"
+                $"ConnectInterface: Socket bind failed: {ex.GetBaseException().Message}"
             );
             ShowFeedback(Color.red, "Failed to bind game port 26960. Is another instance running?");
             yield break;
         }
 
-        var hostGameSocket = bindTask.Result;
         var localPort = GetSocketPort(hostGameSocket);
 
         // Continuously resend the discovery packet until the MMS acknowledges.
@@ -1342,8 +1337,9 @@ internal class ConnectInterface {
         yield return new WaitUntil(() => lobbyTask.IsCompleted);
 
         // TCP responded so we can cancel the UDP discovery loop.
+        // Note: discoveryTask is already complete here (it only awaits the initial synchronous send;
+        // the fire-and-forget retry loop inside runs independently and is stopped via discoveryCts).
         discoveryCts.Cancel();
-        yield return new WaitUntil(() => discoveryTask.IsCompleted);
 
         if (lobbyTask.IsFaulted) {
             Logger.Error(

@@ -37,11 +37,16 @@ internal class HolePunchEncryptedTransportServer : IEncryptedTransportServer {
 
     /// <summary>
     /// Fallback handoff point for callers that cannot pass the socket through the constructor
-    /// (e.g. when <see cref="Start"/> is triggered via an event). Consumed and cleared on
+    /// (e.g. when <see cref="Start"/> is triggered via an event). Consumed atomically by
     /// <see cref="Start"/> to prevent accidental reuse across sessions.
     /// Prefer the constructor parameter where the call chain allows it.
     /// </summary>
-    public static Socket? PreBoundSocket { get; set; }
+    public static Socket? PreBoundSocket {
+        set => _preBoundSocketStatic = value;
+    }
+
+    // Backing field for PreBoundSocket - required for Interlocked.Exchange in Start().
+    private static Socket? _preBoundSocketStatic;
 
     /// <summary>
     /// The underlying DTLS server.
@@ -109,11 +114,10 @@ internal class HolePunchEncryptedTransportServer : IEncryptedTransportServer {
     public void Start(int port) {
         Logger.Info($"HolePunch Server: Starting on port {port}");
 
-        // Constructor parameter takes priority; static property is the fallback for callers
-        // that set it before firing the event that constructs and starts the server.
-        var socket = _preBoundSocket ?? PreBoundSocket;
-        // consume immediately to prevent reuse on a second Start()
-        PreBoundSocket = null; 
+        // Constructor parameter takes priority; static property is the fallback.
+        // Atomically swap _preBoundSocketStatic to null so two concurrent Start() calls
+        // cannot both claim the same socket.
+        var socket = _preBoundSocket ?? Interlocked.Exchange(ref _preBoundSocketStatic, null);
 
         _punchCts = new CancellationTokenSource();
 

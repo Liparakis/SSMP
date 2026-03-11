@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using Microsoft.Extensions.Logging;
 
 namespace MMS.Services;
 
@@ -20,6 +21,7 @@ public sealed class DiscoveryService {
     private readonly ConcurrentDictionary<Guid, (string HostToken, string ClientIp, long RegisteredTicks)> _pendingJoins = new();
 
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger<DiscoveryService> _logger;
 
     /// <summary>
     /// Initialises a new <see cref="DiscoveryService"/>.
@@ -28,7 +30,9 @@ public sealed class DiscoveryService {
     /// Abstraction over time. Pass <see cref="TimeProvider.System"/> in production
     /// or a fake in tests. Defaults to <see cref="TimeProvider.System"/> if omitted.
     /// </param>
-    public DiscoveryService(TimeProvider? timeProvider = null) {
+    /// <param name="logger">Logger for diagnostic output.</param>
+    public DiscoveryService(ILogger<DiscoveryService> logger, TimeProvider? timeProvider = null) {
+        _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -133,15 +137,28 @@ public sealed class DiscoveryService {
     internal void Cleanup() {
         var now = _timeProvider.GetTimestamp();
 
+        var cacheEvicted = 0;
         foreach (var (key, value) in _cache) {
-            if (now > value.ExpiryTicks)
-                _cache.TryRemove(key, out _);
+            if (now > value.ExpiryTicks && _cache.TryRemove(key, out _))
+                cacheEvicted++;
         }
 
         var pendingJoinCutoff = now - DurationToTicks(EntryLifetime);
+        var pendingEvicted = 0;
         foreach (var (key, value) in _pendingJoins) {
-            if (value.RegisteredTicks < pendingJoinCutoff)
-                _pendingJoins.TryRemove(key, out _);
+            if (value.RegisteredTicks < pendingJoinCutoff && _pendingJoins.TryRemove(key, out _))
+                pendingEvicted++;
+        }
+
+        if (cacheEvicted > 0 || pendingEvicted > 0) {
+            _logger.LogInformation(
+                "[Cleanup] Evicted {CacheEvicted} endpoint(s) and {PendingEvicted} pending join(s) " +
+                "(lifetime={EntryLifetimeSec}s, now={Now})",
+                cacheEvicted,
+                pendingEvicted,
+                (int) EntryLifetime.TotalSeconds,
+                now
+            );
         }
     }
 
