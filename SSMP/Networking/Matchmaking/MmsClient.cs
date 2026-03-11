@@ -30,6 +30,9 @@ internal sealed class MmsClient : IDisposable {
     /// <summary>Opcode for UDP endpoint discovery packets: <c>[0x44][16-byte Guid]</c>.</summary>
     private const byte DiscoveryOpcode = 0x44; // 'D'
 
+    /// <summary>Resend time for each packet.</summary>
+    private const int DiscoveryRetryMs = 500;
+
     /// <summary>
     /// Shared, connection-pooled client. Do NOT dispose per-request.
     /// Configured for minimal overhead: no cookies, no proxy, no redirects.
@@ -44,12 +47,12 @@ internal sealed class MmsClient : IDisposable {
 
     /// <summary>
     /// Pre-built content for heartbeat POSTs. Constructed once, reused forever.
-    /// Sending an empty JSON object is sufficient — the token is in the URL.
+    /// Sending an empty JSON object is sufficient since the token is in the URL.
     /// </summary>
     private static readonly ByteArrayContent EmptyJsonContent = CreateEmptyJsonContent();
 
     private static HttpClient CreateSharedHttpClient() {
-        // Process-wide on Mono/Unity — documented intentionally (see XML doc above)
+        // Process-wide on Mono/Unity, documented intentionally (see XML doc above)
         ServicePointManager.DefaultConnectionLimit = 10;
         ServicePointManager.UseNagleAlgorithm = false;
         ServicePointManager.Expect100Continue = false;
@@ -101,8 +104,8 @@ internal sealed class MmsClient : IDisposable {
     public static event Action<string, int>? PunchClientRequestedStatic;
 
     /// <summary>Initialises a new <see cref="MmsClient"/> targeting the given server URL.</summary>
-    /// <param name="baseUrl">Base URL of the MMS server (e.g. <c>"http://localhost:5000"</c>).</param>
-    public MmsClient(string baseUrl = "http://localhost:5000") {
+    /// <param name="baseUrl">Base URL of the MMS server (e.g. <c>"https://your-server:5000"</c>).</param>
+    public MmsClient(string baseUrl = "https://localhost:5000") {
         _baseUrl = baseUrl.TrimEnd('/');
     }
 
@@ -119,7 +122,7 @@ internal sealed class MmsClient : IDisposable {
 
     /// <summary>
     /// Creates a matchmaking lobby. The caller must have already called
-    /// <see cref="SendDiscoveryPacket"/> with <paramref name="discoveryToken"/> so the MMS
+    /// <see cref="SendDiscoveryPacketAsync"/> with <paramref name="discoveryToken"/> so the MMS
     /// can record the host's external endpoint before this request arrives.
     /// </summary>
     /// <param name="discoveryToken">Token sent in the UDP discovery packet to identify this host.</param>
@@ -137,13 +140,13 @@ internal sealed class MmsClient : IDisposable {
     ) {
         try {
             var localIp = GetLocalIpAddress();
-            var lanIpPart = localIp is not null ? $",\"HostLanIp\":\"{localIp}:{localPort}\"" : "";
+            var lanIpPart = localIp is not null ? $",\"HostLanIp\":\"{EscapeJsonString(localIp)}:{localPort}\"" : "";
             var typeString = lobbyType.ToWireString();
             var json =
                 $"{{\"DiscoveryToken\":\"{discoveryToken}\"," +
                 $"\"IsPublic\":{(isPublic ? "true" : "false")}," +
-                $"\"GameVersion\":\"{gameVersion}\"," +
-                $"\"LobbyType\":\"{typeString}\"{lanIpPart}}}";
+                $"\"GameVersion\":\"{EscapeJsonString(gameVersion)}\"," +
+                $"\"LobbyType\":\"{EscapeJsonString(typeString)}\"{lanIpPart}}}";
 
             Logger.Info($"MmsClient: Creating lobby (token={discoveryToken}, localIp={localIp})");
 
@@ -178,9 +181,9 @@ internal sealed class MmsClient : IDisposable {
     ) {
         try {
             var json =
-                $"{{\"ConnectionData\":\"{steamLobbyId}\"," +
+                $"{{\"ConnectionData\":\"{EscapeJsonString(steamLobbyId)}\"," +
                 $"\"IsPublic\":{(isPublic ? "true" : "false")}," +
-                $"\"GameVersion\":\"{gameVersion}\"," +
+                $"\"GameVersion\":\"{EscapeJsonString(gameVersion)}\"," +
                 $"\"LobbyType\":\"steam\"}}";
 
             var response = await PostJsonStringAsync($"{_baseUrl}/lobby", json);
@@ -245,7 +248,7 @@ internal sealed class MmsClient : IDisposable {
 
     /// <summary>
     /// Joins a lobby and returns host connection info plus a client token for UDP discovery.
-    /// After calling this, invoke <see cref="SendDiscoveryPacket"/> with the returned
+    /// After calling this, invoke <see cref="SendDiscoveryPacketAsync"/> with the returned
     /// <c>ClientToken</c> from the gameplay socket to initiate NAT hole-punching.
     /// </summary>
     /// <param name="lobbyId">The lobby code or connection data to join.</param>
@@ -259,7 +262,6 @@ internal sealed class MmsClient : IDisposable {
             var response = await PostJsonStringAsync($"{_baseUrl}/lobby/{lobbyId}/join", "{}");
             if (response is null) return null;
 
-            // response.AsSpan() is zero-allocation — no CharPool rental needed
             var span = response.AsSpan();
 
             var connectionData = ExtractJsonValue(span, "connectionData");
@@ -291,36 +293,56 @@ internal sealed class MmsClient : IDisposable {
     }
 
     /// <summary>
-    /// Sends a 17-byte UDP discovery packet so the MMS can record this socket's
-    /// external endpoint. Must be called from the same socket used for gameplay,
-    /// so the observed external endpoint matches the one peers need to reach.
+    /// Sends UDP discovery packets from the given socket in a loop until <paramref name="ct"/>
+    /// is canceled, so the MMS can record this socket's external endpoint.
+    /// Must be called from the same socket used for gameplay so the observed external
+    /// endpoint matches the one peers need to reach.
     /// </summary>
     /// <remarks>
     /// Packet layout: <c>[0x44 'D'][16-byte Guid, little-endian]</c>.
-    /// The packet is stack-allocated — no heap allocations occur.
+    /// The packet is stack-allocated so no heap allocations occur.
+    /// UDP is unreliable, so the packet is resent every <see cref="DiscoveryRetryMs"/> ms until
+    /// canceled. The MMS records each packet idempotently.
+    /// Cancel the token once the TCP response (lobby creation or join) is received.
     /// </remarks>
     /// <param name="socket">The bound UDP socket to send from.</param>
     /// <param name="token">Token that identifies this discovery attempt.</param>
-    public void SendDiscoveryPacket(Socket socket, Guid token) {
+    /// <param name="ct">Canceled by the caller when the MMS has acknowledged the endpoint via TCP.</param>
+    public async Task SendDiscoveryPacketAsync(Socket socket, Guid token, CancellationToken ct) {
+        IPEndPoint endpoint;
         try {
             var uri = new Uri(_baseUrl);
-            var addresses = Dns.GetHostAddresses(uri.Host);
+            var addresses = await Dns.GetHostAddressesAsync(uri.Host);
             if (addresses.Length == 0) {
                 Logger.Warn("MmsClient: Could not resolve MMS hostname for UDP discovery");
                 return;
             }
-
-            // Stack-allocate the 17-byte packet — zero heap allocations
-            Span<byte> packet = stackalloc byte[17];
-            packet[0] = DiscoveryOpcode;
-            token.TryWriteBytes(packet[1..]);
-
-            var endpoint = new IPEndPoint(addresses[0], UdpDiscoveryPort);
-            socket.SendTo(packet.ToArray(), endpoint);
-            Logger.Info($"MmsClient: Sent discovery packet to {endpoint} for token {token}");
+            endpoint = new IPEndPoint(addresses[0], UdpDiscoveryPort);
         } catch (Exception ex) {
-            Logger.Warn($"MmsClient: Discovery packet failed: {ex.Message}");
+            Logger.Warn($"MmsClient: Discovery packet setup failed: {ex.Message}");
+            return;
         }
+
+        var packetBytes = new byte[17];
+        packetBytes[0] = DiscoveryOpcode;
+        token.TryWriteBytes(packetBytes.AsSpan(1));
+
+        Logger.Info($"MmsClient: Starting discovery packet loop to {endpoint} for token {token}");
+        var sent = 0;
+        while (!ct.IsCancellationRequested) {
+            try {
+                socket.SendTo(packetBytes, endpoint);
+                sent++;
+                Logger.Debug($"MmsClient: Sent discovery packet #{sent} to {endpoint}");
+                await Task.Delay(DiscoveryRetryMs, ct);
+            } catch (OperationCanceledException) {
+                break;
+            } catch (Exception ex) {
+                Logger.Warn($"MmsClient: Discovery packet send failed: {ex.Message}");
+            }
+        }
+
+        Logger.Info($"MmsClient: Discovery packet loop stopped after {sent} packet(s)");
     }
 
     /// <summary>
@@ -333,8 +355,6 @@ internal sealed class MmsClient : IDisposable {
             Logger.Error("MmsClient: Cannot start WebSocket without host token");
             return;
         }
-
-        // Fire-and-forget — ConnectWebSocketAsync runs on the thread pool
         _ = ConnectWebSocketAsync();
     }
 
@@ -358,7 +378,6 @@ internal sealed class MmsClient : IDisposable {
             await _hostWebSocket.ConnectAsync(new Uri($"{wsUrl}/ws/{_hostToken}"), ct);
             Logger.Info("MmsClient: WebSocket connected");
 
-            // Rent receive buffer for the lifetime of this connection
             var buffer = ArrayPool<byte>.Shared.Rent(1024);
             try {
                 while (_hostWebSocket.State == WebSocketState.Open && !ct.IsCancellationRequested) {
@@ -376,11 +395,11 @@ internal sealed class MmsClient : IDisposable {
                 ArrayPool<byte>.Shared.Return(buffer);
             }
         } catch (OperationCanceledException) {
-            // Normal shutdown via StopWebSocket — not an error
+            // Normal shutdown via StopWebSocket
         } catch (Exception ex) {
             Logger.Error($"MmsClient: WebSocket error: {ex.Message}");
         } finally {
-            // Always dispose here — StopWebSocket only cancels, never disposes directly,
+            // Always dispose here. StopWebSocket only cancels, never disposes directly,
             // to avoid ObjectDisposedException mid-ReceiveAsync
             _hostWebSocket?.Dispose();
             _hostWebSocket = null;
@@ -399,9 +418,9 @@ internal sealed class MmsClient : IDisposable {
         var portStr = ExtractJsonValue(span, "clientPort");
 
         if (ip is not null && int.TryParse(portStr, out var port)) {
-            Logger.Info($"MmsClient: Push notification — client {ip}:{port}");
-            PunchClientRequested?.Invoke(ip, port); // instance subscribers
-            PunchClientRequestedStatic?.Invoke(ip, port); // static relay for singleton callers
+            Logger.Info($"MmsClient: Push notification - client {ip}:{port}");
+            PunchClientRequested?.Invoke(ip, port);
+            PunchClientRequestedStatic?.Invoke(ip, port);
         }
     }
 
@@ -435,8 +454,6 @@ internal sealed class MmsClient : IDisposable {
     /// <param name="state">Unused timer state object.</param>
     private void OnHeartbeatTick(object? state) {
         if (_hostToken is null) return;
-
-        // Fire-and-forget — log on failure, never block the timer thread
         _ = SendHeartbeatAsync(_hostToken);
     }
 
@@ -447,7 +464,6 @@ internal sealed class MmsClient : IDisposable {
     /// <param name="hostToken">Host token of the lobby to refresh.</param>
     private async Task SendHeartbeatAsync(string hostToken) {
         try {
-            // EmptyJsonContent is a pre-built shared instance — zero per-call allocation
             await HttpClient.PostAsync($"{_baseUrl}/lobby/heartbeat/{hostToken}", EmptyJsonContent);
         } catch (Exception ex) {
             Logger.Warn($"MmsClient: Heartbeat failed: {ex.Message}");
@@ -590,7 +606,7 @@ internal sealed class MmsClient : IDisposable {
     /// <see langword="null"/> if the key is not found or the span is malformed.
     /// </returns>
     private static string? ExtractJsonValue(ReadOnlySpan<char> json, string key) {
-        // Build "key": on the stack — no heap allocation for the search pattern
+        // Build "key": on the stack to avoid a heap allocation for the search pattern
         Span<char> searchKey = stackalloc char[key.Length + 3];
         searchKey[0] = '"';
         key.AsSpan().CopyTo(searchKey[1..]);
@@ -607,18 +623,58 @@ internal sealed class MmsClient : IDisposable {
         if (valueStart >= json.Length) return null;
 
         if (json[valueStart] == '"') {
-            // Quoted string — find the closing quote
-            var valueEnd = json[(valueStart + 1)..].IndexOf('"');
-            return valueEnd == -1 ? null : json.Slice(valueStart + 1, valueEnd).ToString();
-        } else {
-            // Unquoted value (number, bool, null) — read until JSON delimiter
-            var valueEnd = valueStart;
-            while (valueEnd < json.Length &&
-                   json[valueEnd] != ',' && json[valueEnd] != '}' && json[valueEnd] != ']')
-                valueEnd++;
-
-            return json.Slice(valueStart, valueEnd - valueStart).Trim().ToString();
+            // Escape-aware string scan that skips \" sequences instead of terminating on them
+            var searchStart = valueStart + 1;
+            while (searchStart < json.Length) {
+                switch (json[searchStart])
+                {
+                    case '\\':
+                        // skip the escaped character
+                        searchStart += 2; 
+                        continue;
+                    case '"':
+                        return json.Slice(valueStart + 1, searchStart - valueStart - 1).ToString();
+                    default:
+                        searchStart++;
+                        break;
+                }
+            }
+            return null;
         }
+
+        // Unquoted value (number, bool, null) - read until JSON delimiter
+        var valueEnd = valueStart;
+        while (valueEnd < json.Length &&
+               json[valueEnd] != ',' && json[valueEnd] != '}' && json[valueEnd] != ']')
+            valueEnd++;
+
+        return json.Slice(valueStart, valueEnd - valueStart).Trim().ToString();
+    }
+
+    /// <summary>
+    /// Escapes a string for safe interpolation into a JSON string literal.
+    /// Handles <c>\</c>, <c>"</c>, and control characters (<c>U+0000</c>–<c>U+001F</c>).
+    /// </summary>
+    /// <param name="value">The raw string to escape.</param>
+    /// <returns>The escaped string, safe for embedding between JSON double-quotes.</returns>
+    private static string EscapeJsonString(string value) {
+        var sb = new StringBuilder(value.Length);
+        foreach (var c in value) {
+            switch (c) {
+                case '\\': sb.Append("\\\\"); break;
+                case '\"': sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n");  break;
+                case '\r': sb.Append("\\r");  break;
+                case '\t': sb.Append("\\t");  break;
+                default:
+                    if (c < ' ')
+                        sb.Append($"\\u{(int)c:X4}");
+                    else
+                        sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
     }
 
     /// <summary>
@@ -626,7 +682,7 @@ internal sealed class MmsClient : IDisposable {
     /// Uses a dummy UDP <c>Connect</c> to select the correct routing interface.
     /// </summary>
     /// <remarks>
-    /// The target address (<c>8.8.8.8:65530</c>) is irrelevant — no data is ever sent.
+    /// The target address (<c>8.8.8.8:65530</c>) is irrelevant - no data is ever sent.
     /// All socket exceptions are intentionally swallowed; a missing LAN IP is non-fatal
     /// and results in same-network detection being skipped on the server side.
     /// </remarks>

@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -23,11 +25,20 @@ public sealed class UdpDiscoveryListener(
     /// <summary>UDP port the listener binds to.</summary>
     private const int UdpPort = 5001;
 
+    /// <summary>Maximum UDP packets accepted per source IP per <see cref="RateWindowTicks"/>.</summary>
+    private const int MaxPacketsPerWindow = 20;
+
+    /// <summary>Sliding window length for per-source rate limiting (1 second in stopwatch ticks).</summary>
+    private static readonly long RateWindowTicks = Stopwatch.Frequency;
+
+    /// <summary>Per-source-IP packet counters used for rate limiting.</summary>
+    private readonly ConcurrentDictionary<IPAddress, (int Count, long WindowStart)> _rateLimits = new();
+
     /// <summary>Expected packet size: 1-byte opcode + 16-byte Guid.</summary>
     private const int PacketSize = 17;
 
-    /// <summary>Opcode for endpoint discovery packets.</summary>
-    private const byte DiscoveryOpcode = 0x44; // 'D'
+    /// <summary>Opcode for endpoint discovery packets (<c>'D'</c>).</summary>
+    private const byte DiscoveryOpcode = 0x44;
 
     /// <summary>
     /// Binds a UDP socket on <see cref="UdpPort"/> and dispatches received packets
@@ -47,7 +58,6 @@ public sealed class UdpDiscoveryListener(
             } catch (OperationCanceledException) {
                 break;
             } catch (Exception ex) {
-                // Pass full exception — preserves stack trace in structured logging
                 logger.LogError(ex, "[UDP] Error processing discovery packet");
             }
         }
@@ -57,7 +67,7 @@ public sealed class UdpDiscoveryListener(
 
     /// <summary>
     /// Validates an incoming UDP packet, records its endpoint in <see cref="DiscoveryService"/>,
-    /// and — if the token belongs to a pending client join — pushes the endpoint to the host
+    /// and if the token belongs to a pending client join, pushes the endpoint to the host
     /// WebSocket via <see cref="PushClientEndpointAsync"/>.
     /// Packets with an unexpected length or opcode are silently discarded.
     /// </summary>
@@ -66,30 +76,37 @@ public sealed class UdpDiscoveryListener(
     private async Task HandlePacketAsync(UdpReceiveResult result, CancellationToken cancellationToken) {
         ReadOnlySpan<byte> data = result.Buffer;
 
+        // Per-source-IP rate limit to prevent amplification attacks
+        if (IsRateLimited(result.RemoteEndPoint.Address))
+            return;
+
         // Validate packet length and opcode before any further processing
         if (data.Length != PacketSize || data[0] != DiscoveryOpcode)
             return;
 
-        // Parse Guid directly from span — avoids a 16-byte heap allocation
+        // Parse directly from the span to avoid a 16-byte heap allocation
         var token = new Guid(data.Slice(1, 16));
         var endpoint = result.RemoteEndPoint;
 
         discoveryService.Record(token, endpoint);
         logger.LogDebug("[UDP] Recorded endpoint {Endpoint} for token {Token}", endpoint, token);
 
-        // If this token belongs to a pending client join, push the endpoint to the host WebSocket
-        var hostToken = discoveryService.TryConsumePendingJoin(token);
-        if (hostToken is null)
+        var pending = discoveryService.TryConsumePendingJoin(token);
+        if (pending is null)
             return;
 
-        var lobby = lobbyService.GetLobbyByToken(hostToken);
+        var lobby = lobbyService.GetLobbyByToken(pending.Value.HostToken);
         if (lobby?.HostWebSocket is not { State: WebSocketState.Open } ws) {
             logger.LogWarning("[UDP] Host WebSocket unavailable for pending join token {Token}", token);
             return;
         }
 
-        await PushClientEndpointAsync(ws, endpoint, cancellationToken);
-        logger.LogInformation("[UDP] Pushed client endpoint {Endpoint} to host via WebSocket", endpoint);
+        // Use the TCP-observed IP rather than the one in the packet to prevent MiTM spoofing.
+        // The port still comes from UDP since that's what the client is actually hole-punching on.
+        var safeEndpoint = new IPEndPoint(IPAddress.Parse(pending.Value.ClientIp), endpoint.Port);
+
+        await PushClientEndpointAsync(ws, safeEndpoint, cancellationToken);
+        logger.LogInformation("[UDP] Pushed client endpoint {Endpoint} to host via WebSocket", safeEndpoint);
     }
 
     /// <summary>
@@ -111,7 +128,7 @@ public sealed class UdpDiscoveryListener(
     ) {
         var json = $"{{\"clientIp\":\"{endpoint.Address}\",\"clientPort\":{endpoint.Port}}}";
 
-        // Rent a byte buffer from the pool instead of allocating a new array
+
         var maxByteCount = Encoding.UTF8.GetMaxByteCount(json.Length);
         var rentedBuffer = ArrayPool<byte>.Shared.Rent(maxByteCount);
         try {
@@ -121,5 +138,24 @@ public sealed class UdpDiscoveryListener(
         } finally {
             ArrayPool<byte>.Shared.Return(rentedBuffer);
         }
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> if the given source address has exceeded
+    /// <see cref="MaxPacketsPerWindow"/> packets within the current rate window,
+    /// in which case the packet should be silently dropped.
+    /// </summary>
+    private bool IsRateLimited(IPAddress address) {
+        var now = Stopwatch.GetTimestamp();
+        var entry = _rateLimits.GetOrAdd(address, _ => (0, now));
+
+        // Reset counter when the window has elapsed
+        if (now - entry.WindowStart > RateWindowTicks){
+            entry = (1, now);
+        }else{
+            entry = (entry.Count + 1, entry.WindowStart);
+        }
+        _rateLimits[address] = entry;
+        return entry.Count > MaxPacketsPerWindow;
     }
 }

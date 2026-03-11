@@ -8,7 +8,9 @@ using JetBrains.Annotations;
 using MMS.Services;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using MMS.Models;
+using System.Threading.RateLimiting;
 
 namespace MMS;
 
@@ -21,13 +23,13 @@ public class Program {
     /// <summary>Well-known lobby type string constants used when creating or filtering lobbies.</summary>
     private static class LobbyTypes {
         /// <summary>
-        /// Steam lobby — connection data is a Steam lobby ID.
+        /// Steam lobby - connection data is a Steam lobby ID.
         /// Used as the <c>LobbyType</c> field in <see cref="CreateLobbyRequest"/> and <see cref="LobbyResponse"/>.
         /// </summary>
         public const string Steam = "steam";
 
         /// <summary>
-        /// Matchmaking lobby — connection data is an <c>IP:Port</c> pair discovered via UDP.
+        /// Matchmaking lobby - connection data is an <c>IP:Port</c> pair discovered via UDP.
         /// Used as the <c>LobbyType</c> field in <see cref="CreateLobbyRequest"/> and <see cref="LobbyResponse"/>.
         /// </summary>
         public const string Matchmaking = "matchmaking";
@@ -65,6 +67,31 @@ public class Program {
             }
         );
 
+        // Per-IP rate limiting to prevent brute-force and resource-exhaustion attacks
+        builder.Services.AddRateLimiter(options => {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.AddPolicy("lobby", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions {
+                        Window = TimeSpan.FromMinutes(1),
+                        PermitLimit = 60,
+                        QueueLimit = 0
+                    }
+                )
+            );
+            options.AddPolicy("join", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions {
+                        Window = TimeSpan.FromMinutes(1),
+                        PermitLimit = 30,
+                        QueueLimit = 0
+                    }
+                )
+            );
+        });
+
         if (isDevelopment) {
             builder.Services.AddHttpLogging(_ => { });
         } else if (!ConfigureHttpsCertificate(builder)) {
@@ -79,6 +106,7 @@ public class Program {
             app.UseExceptionHandler("/error");
 
         app.UseForwardedHeaders();
+        app.UseRateLimiter();
         app.UseWebSockets();
         MapEndpoints(app, isDevelopment);
 
@@ -145,21 +173,21 @@ public class Program {
            .WithName("ListLobbies");
 
         // Lobby Management
-        app.MapPost("/lobby", CreateLobby).WithName("CreateLobby");
-        app.MapDelete("/lobby/{token}", CloseLobby).WithName("CloseLobby");
+        app.MapPost("/lobby", CreateLobby).WithName("CreateLobby").RequireRateLimiting("lobby");
+        app.MapDelete("/lobby/{token}", CloseLobby).WithName("CloseLobby").RequireRateLimiting("lobby");
 
         // Host Operations
-        app.MapPost("/lobby/heartbeat/{token}", Heartbeat).WithName("Heartbeat");
-        app.MapGet("/lobby/pending/{token}", GetPendingClients).WithName("GetPendingClients");
+        app.MapPost("/lobby/heartbeat/{token}", Heartbeat).WithName("Heartbeat").RequireRateLimiting("lobby");
+        app.MapGet("/lobby/pending/{token}", GetPendingClients).WithName("GetPendingClients").RequireRateLimiting("lobby");
 
-        // WebSocket — host push notifications
+        // WebSocket for host push notifications
         app.Map(
             "/ws/{token}", (HttpContext context, string token, LobbyService lobbyService, ILogger<Program> logger) =>
                 HandleHostWebSocketAsync(context, token, lobbyService, logger, isDevelopment)
-        );
+        ).RequireRateLimiting("lobby");
 
         // Client Operations
-        app.MapPost("/lobby/{connectionData}/join", JoinLobby).WithName("JoinLobby");
+        app.MapPost("/lobby/{connectionData}/join", JoinLobby).WithName("JoinLobby").RequireRateLimiting("join");
     }
 
     /// <summary>Returns all lobbies, optionally filtered by type.</summary>
@@ -187,6 +215,7 @@ public class Program {
     /// <param name="discoveryService">Service used to await the host's UDP endpoint advertisement.</param>
     /// <param name="logger">Logger for audit and diagnostic output.</param>
     /// <param name="env">The host environment, used to redact sensitive values outside Development.</param>
+    /// <param name="context">HTTP context used to read the caller's TCP-layer IP address.</param>
     /// <returns>
     /// 201 Created with <see cref="CreateLobbyResponse"/> on success;
     /// 400 Bad Request with an <see cref="ErrorResponse"/> on validation or discovery failure.
@@ -197,10 +226,20 @@ public class Program {
         LobbyNameService lobbyNameService,
         DiscoveryService discoveryService,
         ILogger<Program> logger,
-        IWebHostEnvironment env
+        IWebHostEnvironment env,
+        HttpContext context
     ) {
         var lobbyType = request.LobbyType ?? LobbyTypes.Matchmaking;
         string connectionData;
+
+        // Strict allowlist validation for lobby type
+        if (lobbyType is not (LobbyTypes.Steam or LobbyTypes.Matchmaking))
+            return TypedResults.BadRequest(new ErrorResponse("Invalid lobby type"));
+
+        // Validate HostLanIp format if provided
+        if (request.HostLanIp is not null &&
+            (!IPEndPoint.TryParse(request.HostLanIp, out var lanEp) || lanEp.Port == 0))
+            return TypedResults.BadRequest(new ErrorResponse("Invalid HostLanIp format (expected IP:Port)"));
 
         if (lobbyType == LobbyTypes.Steam) {
             if (string.IsNullOrEmpty(request.ConnectionData))
@@ -217,14 +256,15 @@ public class Program {
             );
 
             if (discovered is null) {
-                return TypedResults.BadRequest(
-                    new ErrorResponse(
-                        "Endpoint discovery timed out — ensure UDP port 5001 is reachable"
-                    )
-                );
+                return TypedResults.BadRequest(new ErrorResponse("UDP endpoint discovery timed out. Ensure your client is sending discovery packets."));
             }
 
-            connectionData = $"{discovered.Address}:{discovered.Port}";
+            // Use the IP from the TCP request rather than the UDP source address.
+            var hostIp = context.Connection.RemoteIpAddress is { } remoteIp
+                ? (remoteIp.IsIPv4MappedToIPv6 ? remoteIp.MapToIPv4() : remoteIp).ToString()
+                : discovered.Address.ToString(); // fallback
+
+            connectionData = $"{hostIp}:{discovered.Port}";
         }
 
         var lobby = lobbyService.CreateLobby(
@@ -344,13 +384,13 @@ public class Program {
         if (lobby is null)
             return TypedResults.NotFound(new ErrorResponse("Lobby not found"));
 
-        // Normalize the remote IP — handles IPv6-mapped IPv4 (e.g., "::ffff:1.2.3.4" → "1.2.3.4")
+        // Normalize the remote IP - handles IPv6-mapped IPv4 (e.g., "::ffff:1.2.3.4" → "1.2.3.4")
         var clientIp = context.Connection.RemoteIpAddress is { } remoteIp
             ? (remoteIp.IsIPv4MappedToIPv6 ? remoteIp.MapToIPv4() : remoteIp).ToString()
             : "unknown";
 
         var clientToken = Guid.NewGuid();
-        discoveryService.RegisterPendingJoin(clientToken, lobby.HostToken);
+        discoveryService.RegisterPendingJoin(clientToken, lobby.HostToken, clientIp);
 
         logger.LogInformation(
             "[JOIN] Registered pending join for lobby {Lobby} (token: {Token})",
@@ -388,7 +428,7 @@ public class Program {
         if (clientIp != hostPublicIp)
             return null;
 
-        logger.LogInformation("[JOIN] Local network detected — returning LAN IP: {LanIp}", lobby.HostLanIp);
+        logger.LogInformation("[JOIN] Local network detected - returning LAN IP: {LanIp}", lobby.HostLanIp);
         return lobby.HostLanIp;
     }
 
@@ -443,10 +483,12 @@ public class Program {
                     break;
             }
         } catch (Exception ex) when (ex is WebSocketException || ex.InnerException is SocketException) {
-            // Host disconnected without a proper close handshake — expected during game exit
+            // Host disconnected without a proper close handshake - expected during game exit
         } finally {
-            ArrayPool<byte>.Shared.Return(buffer);
+            // Null the reference before returning the buffer and before using disposes
+            // the WebSocket, so the UDP listener never sees a stale/disposed reference.
             lobby.HostWebSocket = null;
+            ArrayPool<byte>.Shared.Return(buffer);
             logger.LogInformation("[WS] Host disconnected from lobby {Lobby}", lobbyId);
         }
     }

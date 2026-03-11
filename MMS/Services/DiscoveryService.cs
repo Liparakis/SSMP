@@ -16,8 +16,8 @@ public sealed class DiscoveryService {
     // Stores discovered endpoints. Expiry is a monotonic timestamp (ticks).
     private readonly ConcurrentDictionary<Guid, (IPEndPoint Endpoint, long ExpiryTicks)> _cache = new();
 
-    // Maps clientToken -> (hostToken, registrationTicks) for pending UDP joins.
-    private readonly ConcurrentDictionary<Guid, (string HostToken, long RegisteredTicks)> _pendingJoins = new();
+    // clientIp comes from the TCP layer so it cannot be spoofed via the plaintext UDP packet.
+    private readonly ConcurrentDictionary<Guid, (string HostToken, string ClientIp, long RegisteredTicks)> _pendingJoins = new();
 
     private readonly TimeProvider _timeProvider;
 
@@ -60,7 +60,7 @@ public sealed class DiscoveryService {
     /// Polls for a discovered endpoint until it appears or the timeout elapses.
     /// </summary>
     /// <remarks>
-    /// Uses <see cref="PeriodicTimer"/> rather than <c>Task.Delay</c> in a loop —
+    /// Uses <see cref="PeriodicTimer"/> rather than <c>Task.Delay</c> in a loop since
     /// it does not re-queue the timer on each tick and has clean cancellation semantics.
     /// The cache is checked once immediately before the first timer tick to avoid a
     /// <see cref="PollInterval"/> delay when the packet has already arrived.
@@ -77,7 +77,6 @@ public sealed class DiscoveryService {
         TimeSpan timeout,
         CancellationToken ct = default
     ) {
-        // Check immediately before entering the polling loop.
         var ep = TryGet(token);
         if (ep is not null)
             return ep;
@@ -96,19 +95,27 @@ public sealed class DiscoveryService {
 
     /// <summary>
     /// Registers a client token waiting for UDP discovery.
-    /// Maps <paramref name="clientToken"/> → <paramref name="hostToken"/> so the UDP
+    /// Maps <paramref name="clientToken"/> to <paramref name="hostToken"/> so the UDP
     /// listener can find and notify the correct lobby host.
     /// </summary>
-    public void RegisterPendingJoin(Guid clientToken, string hostToken) {
-        _pendingJoins[clientToken] = (hostToken, _timeProvider.GetTimestamp());
+    /// <param name="clientToken">Token the client will embed in its UDP discovery packet.</param>
+    /// <param name="hostToken">Host token of the lobby the client is joining.</param>
+    /// <param name="clientIp">
+    /// The client's IP address as seen by the TCP layer, immune to UDP-level spoofing.
+    /// Used instead of the UDP packet's source address when pushing the client endpoint to the host WebSocket.
+    /// </param>
+    public void RegisterPendingJoin(Guid clientToken, string hostToken, string clientIp) {
+        _pendingJoins[clientToken] = (hostToken, clientIp, _timeProvider.GetTimestamp());
     }
 
     /// <summary>
-    /// Atomically removes and returns the host token associated with a pending join.
-    /// Returns <see langword="null"/> if the token is not registered.
+    /// Atomically removes and returns the host token and TCP-observed client IP associated
+    /// with a pending join. Returns <see langword="null"/> if the token is not registered.
     /// </summary>
-    public string? TryConsumePendingJoin(Guid clientToken)
-        => _pendingJoins.TryRemove(clientToken, out var entry) ? entry.HostToken : null;
+    public (string HostToken, string ClientIp)? TryConsumePendingJoin(Guid clientToken)
+        => _pendingJoins.TryRemove(clientToken, out var entry)
+            ? (entry.HostToken, entry.ClientIp)
+            : null;
 
     /// <summary>
     /// Removes expired endpoint cache entries and stale pending joins.

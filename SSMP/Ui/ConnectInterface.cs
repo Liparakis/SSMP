@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using SSMP.Game;
 using SSMP.Game.Settings;
@@ -1163,11 +1164,16 @@ internal class ConnectInterface {
 
         var holePunchSocket = CreateHolePunchSocket();
 
-        var discoveryTask = Task.Run(() => _mmsClient.SendDiscoveryPacket(holePunchSocket, clientToken));
-        yield return new WaitUntil(() => discoveryTask.IsCompleted);
-        Logger.Info($"ConnectInterface: Sent UDP discovery for client token {clientToken}");
+        // Continuously resend the discovery packet until the MMS acknowledges.
+        using var discoveryCts = new CancellationTokenSource();
+        var discoveryTask = _mmsClient.SendDiscoveryPacketAsync(holePunchSocket, clientToken, discoveryCts.Token);
+        Logger.Info($"ConnectInterface: Started UDP discovery loop for client token {clientToken}");
 
         ConnectToMatchmakingLobby(connectionData, lanConnectionData, username, holePunchSocket);
+
+        // Cancel the discovery loop now that the connection has been initiated.
+        discoveryCts.Cancel();
+        yield return new WaitUntil(() => discoveryTask.IsCompleted);
     }
 
     /// <summary>
@@ -1302,8 +1308,13 @@ internal class ConnectInterface {
 
         var hostGameSocket = bindTask.Result;
         var localPort = GetSocketPort(hostGameSocket);
-        _mmsClient.SendDiscoveryPacket(hostGameSocket, discoveryToken);
-        Logger.Info($"ConnectInterface: Sent UDP discovery for host token {discoveryToken}");
+
+        // Continuously resend the discovery packet until the MMS acknowledges the
+        // host's endpoint via TCP (lobby creation response). UDP is unreliable so a
+        // single packet may be dropped before the MMS observes the endpoint.
+        using var discoveryCts = new CancellationTokenSource();
+        var discoveryTask = _mmsClient.SendDiscoveryPacketAsync(hostGameSocket, discoveryToken, discoveryCts.Token);
+        Logger.Info($"ConnectInterface: Started UDP discovery loop for host token {discoveryToken}");
 
         var lobbyTask = _mmsClient.CreateLobbyAsync(
             discoveryToken: discoveryToken,
@@ -1314,6 +1325,10 @@ internal class ConnectInterface {
         );
 
         yield return new WaitUntil(() => lobbyTask.IsCompleted);
+
+        // TCP responded so we can cancel the UDP discovery loop.
+        discoveryCts.Cancel();
+        yield return new WaitUntil(() => discoveryTask.IsCompleted);
 
         if (lobbyTask.IsFaulted) {
             Logger.Error(

@@ -112,21 +112,22 @@ internal class HolePunchEncryptedTransportServer : IEncryptedTransportServer {
         // Constructor parameter takes priority; static property is the fallback for callers
         // that set it before firing the event that constructs and starts the server.
         var socket = _preBoundSocket ?? PreBoundSocket;
-        PreBoundSocket = null; // consume immediately — prevents reuse on a second Start()
+        // consume immediately to prevent reuse on a second Start()
+        PreBoundSocket = null; 
 
         _punchCts = new CancellationTokenSource();
 
         if (_mmsClient is not null)
             _mmsClient.PunchClientRequested += OnPunchClientRequested;
         else
-            Logger.Warn("HolePunch Server: No MmsClient provided — push-based punch coordination disabled");
+            Logger.Warn("HolePunch Server: No MmsClient provided - push-based punch coordination disabled");
 
         if (socket is not null) {
             Logger.Info("HolePunch Server: Reusing pre-bound socket from STUN discovery");
             _dtlsServer.Start(socket);
         } else {
             Logger.Warn(
-                "HolePunch Server: No pre-bound socket — binding a new socket (NAT traversal may be unreliable)"
+                "HolePunch Server: No pre-bound socket - binding a new socket (NAT traversal may be unreliable)"
             );
             _dtlsServer.Start(port);
         }
@@ -179,7 +180,7 @@ internal class HolePunchEncryptedTransportServer : IEncryptedTransportServer {
             return;
         }
 
-        // Fire-and-forget — PunchToClientAsync manages its own lifetime via _punchCts
+        // Fire-and-forget as PunchToClientAsync manages its own lifetime via _punchCts
         _ = PunchToClientAsync(new IPEndPoint(ip, clientPort));
     }
 
