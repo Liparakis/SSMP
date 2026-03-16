@@ -93,7 +93,6 @@ public class LobbyService(LobbyNameService lobbyNameService)
 
     /// <summary>
     /// Returns all active public lobbies, optionally filtered by <paramref name="lobbyType"/>.
-    /// Expired lobbies are excluded but not removed; use <see cref="CleanupDeadLobbies"/> for that.
     /// </summary>
     /// <param name="lobbyType">
     /// Optional case-insensitive filter (e.g. <c>"matchmaking"</c> or <c>"steam"</c>).
@@ -146,9 +145,6 @@ public class LobbyService(LobbyNameService lobbyNameService)
 
     /// <summary>
     /// Removes all lobbies whose <see cref="_Lobby.IsDead"/> flag is set.
-    /// Intended to be called on a periodic background timer.
-    /// Join-session cleanup is handled separately by
-    /// <see cref="JoinSessionService.CleanupExpiredSessions"/>.
     /// </summary>
     /// <param name="onRemoving">Optional callback invoked with each lobby instance before it is removed.</param>
     /// <returns>The number of lobbies removed.</returns>
@@ -163,8 +159,6 @@ public class LobbyService(LobbyNameService lobbyNameService)
 
     /// <summary>
     /// Removes a lobby from all indexes and releases its name back to <see cref="LobbyNameService"/>.
-    /// Any discovery tokens associated with this lobby are cleaned up by
-    /// <see cref="JoinSessionService.CleanupSessionsForLobby"/>.
     /// </summary>
     /// <param name="connectionData">The connection identifier the lobby was registered under.</param>
     /// <param name="onRemoving">Optional callback invoked with the lobby instance before it is removed from all indexes.</param>

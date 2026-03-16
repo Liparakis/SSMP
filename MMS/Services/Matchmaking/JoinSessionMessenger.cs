@@ -8,19 +8,10 @@ namespace MMS.Services.Matchmaking;
 
 /// <summary>
 /// Sends matchmaking rendezvous messages over client and host WebSockets.
+/// Methods returning <see cref="bool"/> distinguish "target missing" from transport exceptions.
 /// </summary>
-/// <remarks>
-/// Each send helper first verifies that the target socket is still open.
-/// Methods returning <see cref="bool"/> let the coordinator distinguish "target missing"
-/// from transport exceptions raised during the actual send.
-/// </remarks>
 public sealed class JoinSessionMessenger(LobbyService lobbyService) {
-    /// <summary>
-    /// Tells the joining client to begin its UDP mapping phase by sending its
-    /// discovery token to the STUN/mapping endpoint.
-    /// </summary>
-    /// <param name="session">The active join session.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <summary>Tells the joining client to begin its UDP mapping phase.</summary>
     public static Task SendBeginClientMappingAsync(JoinSession session, CancellationToken cancellationToken) =>
         SendToJoinClientAsync(
             session,
@@ -35,14 +26,8 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
 
     /// <summary>
     /// Asks the host to refresh its NAT mapping by re-sending its UDP discovery packet.
+    /// Returns <see langword="false"/> if the host is unavailable or missing a discovery token.
     /// </summary>
-    /// <param name="joinId">The join session identifier, forwarded to the host for correlation.</param>
-    /// <param name="lobbyConnectionData">Connection data used to locate the lobby and its host socket.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
-    /// <returns>
-    /// <see langword="true"/> if the message was dispatched to an open host socket;
-    /// <see langword="false"/> if the host is unavailable or missing a discovery token.
-    /// </returns>
     public async Task<bool> SendHostRefreshRequestAsync(
         string joinId,
         string lobbyConnectionData,
@@ -67,12 +52,7 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
         return true;
     }
 
-    /// <summary>
-    /// Notifies the joining client that its external UDP port has been observed by the server.
-    /// </summary>
-    /// <param name="session">The active join session.</param>
-    /// <param name="port">The client's discovered external port.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <summary>Notifies the joining client that its external UDP port has been observed.</summary>
     public static Task SendClientMappingReceivedAsync(
         JoinSession session,
         int port,
@@ -88,12 +68,7 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
             cancellationToken
         );
 
-    /// <summary>
-    /// Notifies the host that its external UDP port has been observed by the server.
-    /// </summary>
-    /// <param name="lobby">The lobby whose host socket will receive the message.</param>
-    /// <param name="port">The host's discovered external port.</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <summary>Notifies the host that its external UDP port has been observed.</summary>
     public static Task SendHostMappingReceivedAsync(_Lobby lobby, int port, CancellationToken cancellationToken) =>
         SendToHostAsync(
             lobby,
@@ -107,15 +82,9 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
 
     /// <summary>
     /// Sends a synchronized NAT punch instruction to the joining client.
+    /// <paramref name="startTimeMs"/> is the coordinated UTC timestamp (Unix ms) at which both sides punch.
+    /// Returns <see langword="false"/> if the client socket is not open.
     /// </summary>
-    /// <param name="session">The active join session.</param>
-    /// <param name="hostPort">The host's external UDP port to punch towards.</param>
-    /// <param name="hostIp">The host's external IP address.</param>
-    /// <param name="startTimeMs">
-    /// Coordinated UTC timestamp (Unix ms) at which both sides should begin punching.
-    /// </param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
-    /// <returns><see langword="true"/> if the client socket was open and the payload was queued for send.</returns>
     public static async Task<bool> SendStartPunchToClientAsync(
         JoinSession session,
         int hostPort,
@@ -142,17 +111,9 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
 
     /// <summary>
     /// Sends a synchronized NAT punch instruction to the lobby host.
+    /// <paramref name="startTimeMs"/> is the coordinated UTC timestamp (Unix ms) at which both sides punch.
+    /// Returns <see langword="false"/> if the host socket is not open.
     /// </summary>
-    /// <param name="lobby">The lobby whose host socket will receive the message.</param>
-    /// <param name="joinId">The join session identifier for host-side correlation.</param>
-    /// <param name="clientIp">The joining client's external IP address.</param>
-    /// <param name="clientPort">The joining client's external UDP port.</param>
-    /// <param name="hostPort">The host's own external UDP port (echoed back for confirmation).</param>
-    /// <param name="startTimeMs">
-    /// Coordinated UTC timestamp (Unix ms) at which both sides should begin punching.
-    /// </param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
-    /// <returns><see langword="true"/> if the host socket was open and the payload was queued for send.</returns>
     public static async Task<bool> SendStartPunchToHostAsync(
         _Lobby lobby,
         string joinId,
@@ -180,12 +141,7 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
         return true;
     }
 
-    /// <summary>
-    /// Notifies the joining client that the join attempt has failed.
-    /// </summary>
-    /// <param name="session">The active join session.</param>
-    /// <param name="reason">A short machine-readable failure reason (e.g. <c>"host_unreachable"</c>).</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <summary>Notifies the joining client that the join attempt has failed.</summary>
     public static Task SendJoinFailedToClientAsync(
         JoinSession session,
         string reason,
@@ -197,13 +153,7 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
             cancellationToken
         );
 
-    /// <summary>
-    /// Notifies the lobby host that a join attempt has failed.
-    /// </summary>
-    /// <param name="lobbyConnectionData">Connection data used to locate the lobby and its host socket.</param>
-    /// <param name="joinId">The join session identifier for host-side correlation.</param>
-    /// <param name="reason">A short machine-readable failure reason (e.g. <c>"host_unreachable"</c>).</param>
-    /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
+    /// <summary>Notifies the lobby host that a join attempt has failed.</summary>
     public async Task SendJoinFailedToHostAsync(
         string lobbyConnectionData,
         string joinId,
@@ -221,9 +171,7 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
         );
     }
 
-    /// <summary>
-    /// Sends <paramref name="payload"/> to the session's client WebSocket, if open.
-    /// </summary>
+    /// <summary>Sends <paramref name="payload"/> to the session's client WebSocket, if open.</summary>
     private static Task SendToJoinClientAsync(
         JoinSession session,
         object payload,
@@ -234,9 +182,7 @@ public sealed class JoinSessionMessenger(LobbyService lobbyService) {
             : WebSocketMessenger.SendAsync(ws, payload, cancellationToken);
     }
 
-    /// <summary>
-    /// Sends <paramref name="payload"/> to the lobby's host WebSocket, if open.
-    /// </summary>
+    /// <summary>Sends <paramref name="payload"/> to the lobby's host WebSocket, if open.</summary>
     private static Task SendToHostAsync(
         _Lobby lobby,
         object payload,

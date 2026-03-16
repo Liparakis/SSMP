@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using MMS.Bootstrap;
 using MMS.Services.Matchmaking;
 
 namespace MMS.Services.Network;
@@ -11,7 +12,7 @@ namespace MMS.Services.Network;
 /// </summary>
 /// <remarks>
 /// Each valid packet carries a session token encoded as UTF-8. The sender's observed
-/// external endpoint is recorded in <see cref="JoinSessionService"/>, which advances
+/// external endpoint is recorded in <see cref="JoinSessionService"/>, advancing
 /// the hole-punch state machine for the corresponding host or client session.
 /// </remarks>
 public sealed class UdpDiscoveryService : BackgroundService
@@ -19,23 +20,14 @@ public sealed class UdpDiscoveryService : BackgroundService
     private readonly JoinSessionService _joinSessionService;
     private readonly ILogger<UdpDiscoveryService> _logger;
 
-    /// <summary>The UDP port this service binds to at startup.</summary>
-    private const int Port = 5001;
+    private static readonly int Port = ProgramState.DiscoveryPort;
 
     /// <summary>
-    /// The exact byte length a valid discovery packet must have.
+    /// Valid discovery packets must be exactly this many bytes.
     /// Packets of any other length are dropped before string decoding.
     /// </summary>
     private const int TokenByteLength = 32;
 
-    /// <summary>
-    /// Initialises a new instance of <see cref="UdpDiscoveryService"/>.
-    /// </summary>
-    /// <param name="joinSessionService">
-    /// Receives the discovered port for each valid token, advancing the NAT hole-punch
-    /// state machine for the corresponding host or client session.
-    /// </param>
-    /// <param name="logger">Logger for startup, shutdown, and per-packet diagnostics.</param>
     public UdpDiscoveryService(JoinSessionService joinSessionService, ILogger<UdpDiscoveryService> logger)
     {
         _joinSessionService = joinSessionService;
@@ -44,10 +36,8 @@ public sealed class UdpDiscoveryService : BackgroundService
 
     /// <summary>
     /// Binds a <see cref="UdpClient"/> to <see cref="Port"/> and enters a receive loop
-    /// until <paramref name="stoppingToken"/> is cancelled by the .NET hosting infrastructure
-    /// (e.g. Ctrl+C, SIGTERM).
+    /// until <paramref name="stoppingToken"/> is cancelled by the hosting infrastructure.
     /// </summary>
-    /// <param name="stoppingToken">Cancellation token that signals application shutdown.</param>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var udpClient = new UdpClient(Port);
@@ -75,20 +65,9 @@ public sealed class UdpDiscoveryService : BackgroundService
 
     /// <summary>
     /// Validates and processes a single UDP packet.
+    /// Byte-length is checked before string decoding to avoid allocations for packets
+    /// that would be rejected anyway (oversized probes, garbage data, etc.).
     /// </summary>
-    /// <remarks>
-    /// Byte-length validation is performed on <paramref name="buffer"/> before any string
-    /// decoding to avoid a heap allocation for packets that would be rejected anyway
-    /// (oversized probes, garbage data, etc.).
-    /// </remarks>
-    /// <param name="buffer">
-    /// Raw bytes from the socket. Must be exactly <see cref="TokenByteLength"/> bytes.
-    /// </param>
-    /// <param name="remoteEndPoint">
-    /// The NAT-translated public endpoint of the sender. The port component is stored
-    /// as the discovered external port for the session.
-    /// </param>
-    /// <param name="cancellationToken">Token used to cancel downstream async operations.</param>
     private async Task ProcessPacketAsync(byte[] buffer, IPEndPoint remoteEndPoint, CancellationToken cancellationToken)
     {
         if (buffer.Length != TokenByteLength)
@@ -114,5 +93,5 @@ public sealed class UdpDiscoveryService : BackgroundService
 
     /// <summary>Formats an endpoint for logging, redacting it in non-development environments.</summary>
     private static string FormatEndPoint(IPEndPoint remoteEndPoint) =>
-        Program.IsDevelopment ? remoteEndPoint.ToString() : "[Redacted]";
+        ProgramState.IsDevelopment ? remoteEndPoint.ToString() : "[Redacted]";
 }

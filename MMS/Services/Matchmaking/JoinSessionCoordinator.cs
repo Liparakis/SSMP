@@ -9,11 +9,6 @@ namespace MMS.Services.Matchmaking;
 /// <summary>
 /// Coordinates join-session lifecycle, discovery routing, and NAT punch orchestration.
 /// </summary>
-/// <remarks>
-/// This class is the single authority over session state transitions.
-/// <see cref="JoinSessionMessenger"/> handles all outbound WebSocket messaging,
-/// and <see cref="JoinSessionStore"/> owns the underlying storage.
-/// </remarks>
 public sealed class JoinSessionCoordinator(
     JoinSessionStore store,
     JoinSessionMessenger messenger,
@@ -28,7 +23,6 @@ public sealed class JoinSessionCoordinator(
     /// <param name="clientIp">The joining client's IP address, used later for punch coordination.</param>
     /// <returns>
     /// The new <see cref="JoinSession"/>, or <see langword="null"/> for Steam lobbies
-    /// (which use the Steam relay and do not require NAT punching).
     /// </returns>
     public JoinSession? CreateJoinSession(_Lobby lobby, string clientIp)
     {
@@ -56,7 +50,7 @@ public sealed class JoinSessionCoordinator(
 
     /// <summary>
     /// Returns an active, non-expired session by its identifier.
-    /// Expired sessions are cleaned up eagerly on access.
+    /// Expired sessions are cleaned up upon access.
     /// </summary>
     /// <param name="joinId">The join session identifier.</param>
     /// <returns>The session, or <see langword="null"/> if not found or expired.</returns>
@@ -152,10 +146,6 @@ public sealed class JoinSessionCoordinator(
     /// <summary>
     /// Fails a join session: notifies both the client and the host, then cleans up the session.
     /// </summary>
-    /// <remarks>
-    /// Notification sends are best-effort. Socket disposal and disconnect races are logged at debug level
-    /// so cleanup can still complete when either side has already gone away.
-    /// </remarks>
     /// <param name="joinId">The join session identifier.</param>
     /// <param name="reason">A short machine-readable failure reason (e.g. <c>"host_unreachable"</c>).</param>
     /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
@@ -293,8 +283,6 @@ public sealed class JoinSessionCoordinator(
 
     /// <summary>
     /// Attempts to issue synchronized <c>start_punch</c> messages to both sides.
-    /// Does nothing and returns silently if either the client port or the host port
-    /// is not yet available.
     /// </summary>
     /// <remarks>
     /// The host is notified first so a late host disconnect cannot leave the client punching alone.
@@ -374,10 +362,6 @@ public sealed class JoinSessionCoordinator(
     /// Removes a session and its client discovery token from the store,
     /// then performs a best-effort close of the client WebSocket.
     /// </summary>
-    /// <remarks>
-    /// Socket shutdown is kicked off in the background with a short timeout so callers are not blocked
-    /// on a peer that never completes the close handshake. Failures are logged at debug level only.
-    /// </remarks>
     private void CleanupJoinSession(string joinId)
     {
         if (!store.Remove(joinId, out var session) || session == null) return;
