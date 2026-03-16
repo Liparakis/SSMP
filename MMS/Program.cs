@@ -40,6 +40,9 @@ public class Program {
 
         builder.Services.AddSingleton<LobbyNameService>();
         builder.Services.AddSingleton<LobbyService>();
+        builder.Services.AddSingleton<JoinSessionStore>();
+        builder.Services.AddSingleton<JoinSessionMessenger>();
+        builder.Services.AddSingleton<JoinSessionCoordinator>();
         builder.Services.AddSingleton<JoinSessionService>();
         builder.Services.AddHostedService<LobbyCleanupService>();
         builder.Services.AddHostedService<UdpDiscoveryService>();

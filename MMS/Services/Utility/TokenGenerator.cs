@@ -16,7 +16,7 @@ internal static class TokenGenerator
     [ThreadStatic]
     private static Random? _random;
 
-    /// <summary>Per-thread RNG; initialized lazily on first access per thread.</summary>
+    /// <summary>Per-thread RNG initialized lazily on first access per thread.</summary>
     private static Random Rng => _random ??= new Random();
 
     /// <summary>
