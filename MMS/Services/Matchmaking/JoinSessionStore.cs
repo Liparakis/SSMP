@@ -11,30 +11,53 @@ namespace MMS.Services.Matchmaking;
 public sealed class JoinSessionStore {
     private readonly ConcurrentDictionary<string, JoinSession> _joinSessions = new();
     private readonly ConcurrentDictionary<string, DiscoveryTokenMetadata> _discoveryMetadata = new();
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _joinIdsByLobby = new();
+    private readonly SortedSet<(DateTime expiresAtUtc, string joinId)> _expiryIndex = new();
+    private readonly Lock _indexLock = new();
 
     /// <summary>Adds or replaces the session keyed by <see cref="JoinSession.JoinId"/>.</summary>
-    public void Add(JoinSession session) => _joinSessions[session.JoinId] = session;
+    public void Add(JoinSession session) {
+        if (_joinSessions.TryGetValue(session.JoinId, out var previous))
+            RemoveIndexes(previous);
+
+        _joinSessions[session.JoinId] = session;
+        AddIndexes(session);
+    }
 
     /// <summary>Attempts to retrieve a session by its join identifier.</summary>
     public bool TryGet(string joinId, out JoinSession? session) =>
         _joinSessions.TryGetValue(joinId, out session);
 
     /// <summary>Removes a session and returns it. Returns <see langword="false"/> if not found.</summary>
-    public bool Remove(string joinId, out JoinSession? session) =>
-        _joinSessions.TryRemove(joinId, out session);
+    public bool Remove(string joinId, out JoinSession? session) {
+        if (!_joinSessions.TryRemove(joinId, out session))
+            return false;
+
+        RemoveIndexes(session);
+
+        return true;
+    }
 
     /// <summary>Returns the join identifiers for all sessions belonging to the given lobby.</summary>
     public IReadOnlyList<string> GetJoinIdsForLobby(string lobbyConnectionData) =>
-        _joinSessions.Values
-                     .Where(s => s.LobbyConnectionData == lobbyConnectionData)
-                     .Select(s => s.JoinId)
-                     .ToList();
+        _joinIdsByLobby.TryGetValue(lobbyConnectionData, out var joinIds)
+            ? joinIds.Keys.ToList()
+            : [];
 
     /// <summary>Returns the join identifiers of all sessions expired before <paramref name="nowUtc"/>.</summary>
-    public IReadOnlyList<string> GetExpiredJoinIds(DateTime nowUtc) =>
-        _joinSessions.Where(kvp => kvp.Value.ExpiresAtUtc < nowUtc)
-                     .Select(kvp => kvp.Key)
-                     .ToList();
+    public IReadOnlyList<string> GetExpiredJoinIds(DateTime nowUtc) {
+        var expiredJoinIds = new List<string>();
+
+        lock (_indexLock) {
+            expiredJoinIds.AddRange(
+                _expiryIndex
+                    .TakeWhile(entry => entry.expiresAtUtc < nowUtc)
+                    .Select(entry => entry.joinId)
+            );
+        }
+
+        return expiredJoinIds;
+    }
 
     /// <summary>Inserts or replaces the metadata associated with a discovery token.</summary>
     public void UpsertDiscoveryToken(string token, DiscoveryTokenMetadata metadata) =>
@@ -66,4 +89,27 @@ public sealed class JoinSessionStore {
         _discoveryMetadata.Where(kvp => kvp.Value.CreatedAt < cutoffUtc)
                           .Select(kvp => kvp.Key)
                           .ToList();
+
+    private void AddIndexes(JoinSession session) {
+        var lobbyJoinIds = _joinIdsByLobby.GetOrAdd(
+            session.LobbyConnectionData, _ => new ConcurrentDictionary<string, byte>()
+        );
+        lobbyJoinIds[session.JoinId] = 0;
+
+        lock (_indexLock) {
+            _expiryIndex.Add((session.ExpiresAtUtc, session.JoinId));
+        }
+    }
+
+    private void RemoveIndexes(JoinSession session) {
+        if (_joinIdsByLobby.TryGetValue(session.LobbyConnectionData, out var lobbyJoinIds)) {
+            lobbyJoinIds.TryRemove(session.JoinId, out _);
+            if (lobbyJoinIds.IsEmpty)
+                _joinIdsByLobby.TryRemove(session.LobbyConnectionData, out _);
+        }
+
+        lock (_indexLock) {
+            _expiryIndex.Remove((session.ExpiresAtUtc, session.JoinId));
+        }
+    }
 }

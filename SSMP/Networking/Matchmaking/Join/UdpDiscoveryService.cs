@@ -15,6 +15,8 @@ namespace SSMP.Networking.Matchmaking.Join;
 /// which it then shares with the peer to enable NAT hole-punching.
 /// </summary>
 internal static class UdpDiscoveryService {
+    private const int ExpectedTokenByteLength = 32;
+
     /// <summary>
     /// Resolves the MMS discovery endpoint and sends token bytes every
     /// <see cref="MmsProtocol.DiscoveryIntervalMs"/> until cancellation.
@@ -29,6 +31,11 @@ internal static class UdpDiscoveryService {
         if (endpoint is null) return;
 
         var tokenBytes = EncodeToken(token);
+        if (tokenBytes.Length != ExpectedTokenByteLength)
+            throw new InvalidOperationException(
+                $"UdpDiscoveryService: discovery token encoded to {tokenBytes.Length} bytes; expected {ExpectedTokenByteLength}."
+            );
+
         await RunDiscoveryLoopAsync(sendRaw, tokenBytes, endpoint, cancellationToken);
     }
 

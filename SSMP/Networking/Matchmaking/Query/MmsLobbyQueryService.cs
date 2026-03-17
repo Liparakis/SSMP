@@ -12,8 +12,7 @@ namespace SSMP.Networking.Matchmaking.Query;
 /// Handles non-host MMS queries: joining an existing lobby, browsing public lobbies,
 /// and probing server compatibility before attempting matchmaking.
 /// </summary>
-internal sealed class MmsLobbyQueryService
-{
+internal sealed class MmsLobbyQueryService {
     /// <summary>Base HTTP URL of the MMS server (e.g. <c>https://mms.example.com</c>).</summary>
     private readonly string _baseUrl;
 
@@ -25,8 +24,7 @@ internal sealed class MmsLobbyQueryService
     /// </summary>
     /// <param name="baseUrl">Base HTTP URL of the MMS server.</param>
     /// <param name="http">HTTP client for MMS REST calls.</param>
-    public MmsLobbyQueryService(string baseUrl, MmsHttpClient http)
-    {
+    public MmsLobbyQueryService(string baseUrl, MmsHttpClient http) {
         _baseUrl = baseUrl;
         _http = http;
     }
@@ -42,8 +40,7 @@ internal sealed class MmsLobbyQueryService
     /// and join ID needed for the subsequent WebSocket rendezvous, or <c>null</c>
     /// if the request failed or the response could not be parsed.
     /// </returns>
-    public async Task<JoinLobbyResult?> JoinLobbyAsync(string lobbyId, int clientPort)
-    {
+    public async Task<JoinLobbyResult?> JoinLobbyAsync(string lobbyId, int clientPort) {
         var (success, response) = await _http.PostJsonAsync(
             $"{_baseUrl}{MmsRoutes.LobbyJoin(lobbyId)}",
             BuildJoinRequestJson(clientPort)
@@ -66,8 +63,7 @@ internal sealed class MmsLobbyQueryService
     /// A list of <see cref="PublicLobbyInfo"/> entries, or <c>null</c> if the
     /// request failed or the response could not be parsed.
     /// </returns>
-    public async Task<List<PublicLobbyInfo>?> GetPublicLobbiesAsync(PublicLobbyType? lobbyType = null)
-    {
+    public async Task<List<PublicLobbyInfo>?> GetPublicLobbiesAsync(PublicLobbyType? lobbyType = null) {
         var url = BuildPublicLobbiesUrl(lobbyType);
         var (success, response) = await _http.GetAsync(url);
         return !success || response == null ? null : MmsResponseParser.ParsePublicLobbies(response);
@@ -98,8 +94,7 @@ internal sealed class MmsLobbyQueryService
     ///   </item>
     /// </list>
     /// </returns>
-    public async Task<(bool? isCompatible, MatchmakingError error)> ProbeMatchmakingCompatibilityAsync()
-    {
+    public async Task<(bool? isCompatible, MatchmakingError error)> ProbeMatchmakingCompatibilityAsync() {
         var (success, response) = await _http.GetAsync($"{_baseUrl}{MmsRoutes.Root}");
         if (!success || response == null)
             return (null, MatchmakingError.None);
@@ -129,19 +124,16 @@ internal sealed class MmsLobbyQueryService
     /// <param name="lobbyId">Lobby ID, used only for log messages.</param>
     /// <param name="response">Raw JSON response body from the join endpoint.</param>
     /// <returns>A populated <see cref="JoinLobbyResult"/>, or <c>null</c> if parsing failed.</returns>
-    private static JoinLobbyResult? ParseAndLogJoinResult(string lobbyId, string response)
-    {
+    private static JoinLobbyResult? ParseAndLogJoinResult(string lobbyId, string response) {
         var joinResult = MmsResponseParser.ParseJoinLobbyResult(response);
-        if (joinResult == null)
-        {
-            Logger.Error($"MmsLobbyQueryService: invalid JoinLobby response: {response}");
+        if (joinResult == null) {
+            Logger.Error(
+                $"MmsLobbyQueryService: invalid JoinLobby response (length={response.Length}, hasJoinId={response.Contains(MmsFields.JoinId)}, hasConnectionData={response.Contains(MmsFields.ConnectionData)})"
+            );
             return null;
         }
 
-        Logger.Info(
-            $"MmsLobbyQueryService: joined lobby {lobbyId}, type={joinResult.LobbyType}, " +
-            $"connection={joinResult.ConnectionData}, joinId={joinResult.JoinId}"
-        );
+        Logger.Info($"MmsLobbyQueryService: joined lobby {lobbyId}, type={joinResult.LobbyType}");
         return joinResult;
     }
 
@@ -152,8 +144,7 @@ internal sealed class MmsLobbyQueryService
     /// <param name="response">Raw JSON health response body.</param>
     /// <param name="serverVersion">Receives the parsed version number on success; 0 on failure.</param>
     /// <returns><c>true</c> if a valid integer version was found; <c>false</c> otherwise.</returns>
-    private static bool TryParseServerVersion(string response, out int serverVersion)
-    {
+    private static bool TryParseServerVersion(string response, out int serverVersion) {
         var versionString = MmsJsonParser.ExtractValue(response.AsSpan(), MmsFields.Version);
         if (int.TryParse(versionString, out serverVersion)) return true;
 
@@ -171,8 +162,7 @@ internal sealed class MmsLobbyQueryService
     /// <c>(true, None)</c> if versions match;
     /// <c>(false, UpdateRequired)</c> if they differ.
     /// </returns>
-    private static (bool? isCompatible, MatchmakingError error) CheckVersionCompatibility(int serverVersion)
-    {
+    private static (bool? isCompatible, MatchmakingError error) CheckVersionCompatibility(int serverVersion) {
         if (serverVersion == MmsProtocol.CurrentVersion)
             return (true, MatchmakingError.None);
 
@@ -192,8 +182,7 @@ internal sealed class MmsLobbyQueryService
     /// Optional lobby type filter. <c>null</c> returns the unfiltered lobbies URL.
     /// </param>
     /// <returns>The fully constructed URL string ready for an HTTP GET request.</returns>
-    private string BuildPublicLobbiesUrl(PublicLobbyType? lobbyType)
-    {
+    private string BuildPublicLobbiesUrl(PublicLobbyType? lobbyType) {
         var url = $"{_baseUrl}{MmsRoutes.Lobbies}";
         if (lobbyType == null) return url;
 

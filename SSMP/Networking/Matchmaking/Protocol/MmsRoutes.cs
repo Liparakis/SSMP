@@ -4,10 +4,9 @@ namespace SSMP.Networking.Matchmaking.Protocol;
 /// MMS REST and WebSocket route segments. Use the static helper methods to
 /// build parameterised paths; use the constants directly for fixed routes.
 /// </summary>
-internal static class MmsRoutes
-{
+internal static class MmsRoutes {
     /// <summary>MMS health-check and version endpoint.</summary>
-    public const string Root = "/";
+    public const string Root = "/health";
 
     /// <summary>Base path for all lobby operations.</summary>
     public const string Lobby = "/lobby";

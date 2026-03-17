@@ -25,7 +25,7 @@ namespace SSMP.Networking.Matchmaking;
 /// </summary>
 internal class MmsClient {
     /// <summary>HTTP client for API requests.</summary>
-    private readonly MmsHttpClient _http = new();
+    private readonly MmsHttpClient _http;
 
     private readonly MmsHostSessionService _hostSession;
     private readonly MmsLobbyQueryService _queries;
@@ -56,16 +56,23 @@ internal class MmsClient {
         remove => _hostSession.StartPunchRequested -= value;
     }
 
-    public MmsClient(string baseUrl) {
+    public MmsClient(
+        string baseUrl,
+        MmsHttpClient? http = null,
+        MmsHostSessionService? hostSession = null,
+        MmsLobbyQueryService? queries = null,
+        MmsJoinCoordinator? joinCoordinator = null
+    ) {
+        _http = http ?? new MmsHttpClient();
         var normalizedBaseUrl = baseUrl.TrimEnd('/');
         string? discoveryHost = null;
         if (Uri.TryCreate(normalizedBaseUrl, UriKind.Absolute, out var uri))
             discoveryHost = uri.Host;
 
         var webSocket = new MmsWebSocketHandler(MmsUtilities.ToWebSocketUrl(normalizedBaseUrl));
-        _hostSession = new MmsHostSessionService(normalizedBaseUrl, discoveryHost, _http, webSocket);
-        _queries = new MmsLobbyQueryService(normalizedBaseUrl, _http);
-        _joinCoordinator = new MmsJoinCoordinator(normalizedBaseUrl, discoveryHost);
+        _hostSession = hostSession ?? new MmsHostSessionService(normalizedBaseUrl, discoveryHost, _http, webSocket);
+        _queries = queries ?? new MmsLobbyQueryService(normalizedBaseUrl, _http);
+        _joinCoordinator = joinCoordinator ?? new MmsJoinCoordinator(normalizedBaseUrl, discoveryHost);
     }
 
     /// <summary>

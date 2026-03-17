@@ -1830,7 +1830,7 @@ internal class ConnectInterface {
         var task = MmsClient.ProbeMatchmakingCompatibilityAsync();
         yield return new WaitUntil(() => task.IsCompleted);
 
-        if (task.Result == false || MmsClient.LastMatchmakingError == MatchmakingError.UpdateRequired) {
+        if (MmsClient.LastMatchmakingError == MatchmakingError.UpdateRequired) {
             ActivateMatchmakingVersionBlock();
             yield break;
         }
@@ -1879,12 +1879,7 @@ internal class ConnectInterface {
     /// Shows the matchmaking block UI if matchmaking is already disabled for this client version.
     /// </summary>
     private bool ShowBlockedMatchmakingIfNeeded() {
-        if (!_isMatchmakingVersionBlocked) {
-            return false;
-        }
-
-        ActivateMatchmakingVersionBlock();
-        return true;
+        return _isMatchmakingVersionBlocked;
     }
 
     /// <summary>

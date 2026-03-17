@@ -10,6 +10,8 @@ namespace SSMP.Networking.Matchmaking.Parsing;
 /// <see cref="ReadOnlySpan{T}"/> slices via <see cref="MmsJsonParser"/>.
 /// </summary>
 internal static class MmsResponseParser {
+    private static readonly string ConnectionDataKey = $"\"{MmsFields.ConnectionData}\":";
+
     /// <summary>
     /// Parses a lobby creation or Steam-lobby registration response into the
     /// fields required to activate a host session.
@@ -181,7 +183,7 @@ internal static class MmsResponseParser {
         ref int idx,
         out ReadOnlySpan<char> slice
     ) {
-        var relative = span[idx..].IndexOf($"\"{MmsFields.ConnectionData}\":", StringComparison.Ordinal);
+        var relative = span[idx..].IndexOf(ConnectionDataKey, StringComparison.Ordinal);
         if (relative == -1) {
             slice = default;
             return false;

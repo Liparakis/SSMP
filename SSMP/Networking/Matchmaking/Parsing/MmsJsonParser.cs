@@ -11,8 +11,7 @@ namespace SSMP.Networking.Matchmaking.Parsing;
 /// they assume well-formed server responses and handle only the small set
 /// of value types (quoted strings, integers) that MMS actually returns.
 /// </summary>
-internal static class MmsJsonParser
-{
+internal static class MmsJsonParser {
     /// <summary>Shared pool for minimizing character buffer allocations.</summary>
     private static readonly ArrayPool<char> CharPool = ArrayPool<char>.Shared;
 
@@ -24,8 +23,7 @@ internal static class MmsJsonParser
     /// <param name="json">The JSON span to search.</param>
     /// <param name="key">The key to find.</param>
     /// <returns>The extracted value or <c>null</c>.</returns>
-    public static string? ExtractValue(ReadOnlySpan<char> json, string key)
-    {
+    public static string? ExtractValue(ReadOnlySpan<char> json, string key) {
         // Build "key": search token on the stack
         Span<char> searchKey = stackalloc char[key.Length + 3];
         searchKey[0] = '"';
@@ -61,23 +59,58 @@ internal static class MmsJsonParser
         bool isPublic,
         string gameVersion,
         PublicLobbyType lobbyType,
-        string? hostLanIp)
-    {
-        var lanIpPart = hostLanIp != null
-            ? $",\"{MmsFields.HostLanIpRequest}\":\"{hostLanIp}:{port}\""
-            : "";
+        string? hostLanIp
+    ) {
+        var lobbyTypeValue = lobbyType == PublicLobbyType.Matchmaking ? "matchmaking" : "steam";
+        var estimatedLength =
+            96 +
+            gameVersion.Length +
+            lobbyTypeValue.Length +
+            (hostLanIp?.Length ?? 0) +
+            (hostLanIp != null ? 16 : 0) +
+            (lobbyType == PublicLobbyType.Matchmaking ? 24 : 0);
 
-        var matchmakingVersionPart = lobbyType == PublicLobbyType.Matchmaking
-            ? $",\"{MmsFields.MatchmakingVersionRequest}\":{MmsProtocol.CurrentVersion}"
-            : "";
+        var buffer = CharPool.Rent(estimatedLength);
+        var span = buffer.AsSpan();
+        var written = 0;
 
-        var json =
-            $"{{\"{MmsFields.HostPortRequest}\":{port},\"{MmsFields.IsPublicRequest}\":{MmsUtilities.BoolToJson(isPublic)}," +
-            $"\"{MmsFields.GameVersionRequest}\":\"{gameVersion}\",\"{MmsFields.LobbyTypeRequest}\":\"{lobbyType.ToString().ToLower()}\"{lanIpPart}{matchmakingVersionPart}}}";
+        Write(span, ref written, "{\"");
+        Write(span, ref written, MmsFields.HostPortRequest);
+        Write(span, ref written, "\":");
+        Write(span, ref written, port);
+        Write(span, ref written, ",\"");
+        Write(span, ref written, MmsFields.IsPublicRequest);
+        Write(span, ref written, "\":");
+        Write(span, ref written, MmsUtilities.BoolToJson(isPublic));
+        Write(span, ref written, ",\"");
+        Write(span, ref written, MmsFields.GameVersionRequest);
+        Write(span, ref written, "\":\"");
+        Write(span, ref written, gameVersion);
+        Write(span, ref written, "\",\"");
+        Write(span, ref written, MmsFields.LobbyTypeRequest);
+        Write(span, ref written, "\":\"");
+        Write(span, ref written, lobbyTypeValue);
+        Write(span, ref written, "\"");
 
-        var buffer = CharPool.Rent(json.Length);
-        json.AsSpan().CopyTo(buffer);
-        return (buffer, json.Length);
+        if (hostLanIp != null) {
+            Write(span, ref written, ",\"");
+            Write(span, ref written, MmsFields.HostLanIpRequest);
+            Write(span, ref written, "\":\"");
+            Write(span, ref written, hostLanIp);
+            Write(span, ref written, ":");
+            Write(span, ref written, port);
+            Write(span, ref written, "\"");
+        }
+
+        if (lobbyType == PublicLobbyType.Matchmaking) {
+            Write(span, ref written, ",\"");
+            Write(span, ref written, MmsFields.MatchmakingVersionRequest);
+            Write(span, ref written, "\":");
+            Write(span, ref written, MmsProtocol.CurrentVersion);
+        }
+
+        Write(span, ref written, "}");
+        return (buffer, written);
     }
 
     /// <summary>
@@ -89,8 +122,7 @@ internal static class MmsJsonParser
     /// Extracts a quoted string value starting at the opening <c>"</c>.
     /// Returns <c>null</c> if the closing quote is missing.
     /// </summary>
-    private static string? ExtractStringValue(ReadOnlySpan<char> json, int openQuoteIndex)
-    {
+    private static string? ExtractStringValue(ReadOnlySpan<char> json, int openQuoteIndex) {
         var valueEnd = json[(openQuoteIndex + 1)..].IndexOf('"');
         return valueEnd == -1 ? null : json.Slice(openQuoteIndex + 1, valueEnd).ToString();
     }
@@ -99,14 +131,38 @@ internal static class MmsJsonParser
     /// Extracts an unquoted numeric value (digits, <c>.</c>, <c>-</c>) starting at
     /// <paramref name="start"/>. Returns an empty string if no numeric characters are found.
     /// </summary>
-    private static string ExtractNumericValue(ReadOnlySpan<char> json, int start)
-    {
+    private static string ExtractNumericValue(ReadOnlySpan<char> json, int start) {
         var end = start;
         while (end < json.Length &&
-               (char.IsDigit(json[end]) || json[end] == '.' || json[end] == '-'))
-        {
+               (char.IsDigit(json[end]) || json[end] == '.' || json[end] == '-')) {
             end++;
         }
+
         return json.Slice(start, end - start).ToString();
+    }
+
+    /// <summary>
+    /// Copies a string value into the destination buffer at the current write position.
+    /// </summary>
+    /// <param name="destination">The character buffer to write into.</param>
+    /// <param name="written">The current write position; incremented by the length of <paramref name="value"/>.</param>
+    /// <param name="value">The string value to copy.</param>
+    private static void Write(Span<char> destination, ref int written, ReadOnlySpan<char> value) {
+        value.CopyTo(destination[written..]);
+        written += value.Length;
+    }
+
+    /// <summary>
+    /// Formats an integer value into the destination buffer at the current write position.
+    /// </summary>
+    /// <param name="destination">The character buffer to write into.</param>
+    /// <param name="written">The current write position; incremented by the number of characters written.</param>
+    /// <param name="value">The integer value to format.</param>
+    /// <exception cref="InvalidOperationException">Thrown when the integer cannot be formatted into the remaining buffer space.</exception>
+    private static void Write(Span<char> destination, ref int written, int value) {
+        if (!value.TryFormat(destination[written..], out var charsWritten))
+            throw new InvalidOperationException("Could not format MMS JSON integer.");
+
+        written += charsWritten;
     }
 }

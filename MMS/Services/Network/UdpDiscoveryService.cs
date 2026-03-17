@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using MMS.Bootstrap;
 using MMS.Services.Matchmaking;
@@ -15,8 +16,7 @@ namespace MMS.Services.Network;
 /// external endpoint is recorded in <see cref="JoinSessionService"/>, advancing
 /// the hole-punch state machine for the corresponding host or client session.
 /// </remarks>
-public sealed class UdpDiscoveryService : BackgroundService
-{
+public sealed class UdpDiscoveryService : BackgroundService {
     private readonly JoinSessionService _joinSessionService;
     private readonly ILogger<UdpDiscoveryService> _logger;
 
@@ -28,8 +28,7 @@ public sealed class UdpDiscoveryService : BackgroundService
     /// </summary>
     private const int TokenByteLength = 32;
 
-    public UdpDiscoveryService(JoinSessionService joinSessionService, ILogger<UdpDiscoveryService> logger)
-    {
+    public UdpDiscoveryService(JoinSessionService joinSessionService, ILogger<UdpDiscoveryService> logger) {
         _joinSessionService = joinSessionService;
         _logger = logger;
     }
@@ -38,24 +37,17 @@ public sealed class UdpDiscoveryService : BackgroundService
     /// Binds a <see cref="UdpClient"/> to <see cref="Port"/> and enters a receive loop
     /// until <paramref name="stoppingToken"/> is cancelled by the hosting infrastructure.
     /// </summary>
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
         using var udpClient = new UdpClient(Port);
         _logger.LogInformation("UDP Discovery Service listening on port {Port}", Port);
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
+        while (!stoppingToken.IsCancellationRequested) {
+            try {
                 var result = await udpClient.ReceiveAsync(stoppingToken);
                 await ProcessPacketAsync(result.Buffer, result.RemoteEndPoint, stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
+            } catch (OperationCanceledException) {
                 break;
-            }
-            catch (Exception ex)
-            {
+            } catch (Exception ex) {
                 _logger.LogError(ex, "Error in UDP Discovery Service receive loop");
             }
         }
@@ -68,10 +60,12 @@ public sealed class UdpDiscoveryService : BackgroundService
     /// Byte-length is checked before string decoding to avoid allocations for packets
     /// that would be rejected anyway (oversized probes, garbage data, etc.).
     /// </summary>
-    private async Task ProcessPacketAsync(byte[] buffer, IPEndPoint remoteEndPoint, CancellationToken cancellationToken)
-    {
-        if (buffer.Length != TokenByteLength)
-        {
+    private async Task ProcessPacketAsync(
+        byte[] buffer,
+        IPEndPoint remoteEndPoint,
+        CancellationToken cancellationToken
+    ) {
+        if (buffer.Length != TokenByteLength) {
             _logger.LogWarning(
                 "Received malformed discovery packet from {EndPoint} (length: {Length})",
                 FormatEndPoint(remoteEndPoint),
@@ -82,9 +76,9 @@ public sealed class UdpDiscoveryService : BackgroundService
 
         var token = Encoding.UTF8.GetString(buffer);
 
-        _logger.LogInformation(
-            "Received discovery token {Token} from {EndPoint}",
-            token,
+        _logger.LogDebug(
+            "Received discovery packet {TokenFingerprint} from {EndPoint}",
+            GetTokenFingerprint(token),
             FormatEndPoint(remoteEndPoint)
         );
 
@@ -94,4 +88,7 @@ public sealed class UdpDiscoveryService : BackgroundService
     /// <summary>Formats an endpoint for logging, redacting it in non-development environments.</summary>
     private static string FormatEndPoint(IPEndPoint remoteEndPoint) =>
         ProgramState.IsDevelopment ? remoteEndPoint.ToString() : "[Redacted]";
+
+    private static string GetTokenFingerprint(string token) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)))[..12];
 }

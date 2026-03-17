@@ -6,19 +6,22 @@ namespace MMS.Bootstrap;
 /// <summary>
 /// Configures Kestrel HTTPS bindings from PEM certificate files in the working directory.
 /// </summary>
-internal static class HttpsCertificateConfigurator
-{
+internal static class HttpsCertificateConfigurator {
     private const string CertFile = "cert.pem";
-    private const string KeyFile  = "key.pem";
+    private const string KeyFile = "key.pem";
 
-    private static readonly ILogger Logger = LoggerFactory
-        .Create(builder => builder.AddSimpleConsole(o =>
-        {
-            o.SingleLine       = true;
-            o.IncludeScopes    = false;
-            o.TimestampFormat  = "HH:mm:ss ";
-        }))
-        .CreateLogger(nameof(HttpsCertificateConfigurator));
+    private static readonly ILogger Logger;
+
+    static HttpsCertificateConfigurator() {
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddSimpleConsole(o => {
+                    o.SingleLine = true;
+                    o.IncludeScopes = false;
+                    o.TimestampFormat = "HH:mm:ss ";
+                }
+            )
+        );
+        Logger = loggerFactory.CreateLogger(nameof(HttpsCertificateConfigurator));
+    }
 
     /// <summary>
     /// Reads <c>cert.pem</c> and <c>key.pem</c> from the working directory and configures
@@ -29,8 +32,7 @@ internal static class HttpsCertificateConfigurator
     /// <see langword="true"/> if the certificate was loaded and Kestrel was configured;
     /// <see langword="false"/> if either file is missing, unreadable, or malformed.
     /// </returns>
-    public static bool TryConfigure(WebApplicationBuilder builder)
-    {
+    public static bool TryConfigure(WebApplicationBuilder builder) {
         if (!TryReadPemFiles(out var pem, out var key))
             return false;
 
@@ -52,30 +54,24 @@ internal static class HttpsCertificateConfigurator
     /// <returns>
     /// <see langword="true"/> if both files were read successfully; otherwise <see langword="false"/>.
     /// </returns>
-    private static bool TryReadPemFiles(out string pem, out string key)
-    {
+    private static bool TryReadPemFiles(out string pem, out string key) {
         pem = key = string.Empty;
 
-        if (!File.Exists(CertFile))
-        {
+        if (!File.Exists(CertFile)) {
             Logger.LogError("Certificate file '{File}' does not exist", CertFile);
             return false;
         }
 
-        if (!File.Exists(KeyFile))
-        {
+        if (!File.Exists(KeyFile)) {
             Logger.LogError("Key file '{File}' does not exist", KeyFile);
             return false;
         }
 
-        try
-        {
+        try {
             pem = File.ReadAllText(CertFile);
             key = File.ReadAllText(KeyFile);
             return true;
-        }
-        catch (Exception e)
-        {
+        } catch (Exception e) {
             Logger.LogError(e, "Could not read '{CertFile}' or '{KeyFile}'", CertFile, KeyFile);
             return false;
         }
@@ -91,16 +87,20 @@ internal static class HttpsCertificateConfigurator
     /// <returns>
     /// <see langword="true"/> if the certificate was created successfully otherwise <see langword="false"/>.
     /// </returns>
-    private static bool TryCreateCertificate(string pem, string key, out X509Certificate2? certificate)
-    {
+    private static bool TryCreateCertificate(string pem, string key, out X509Certificate2? certificate) {
         certificate = null;
-        try
-        {
-            certificate = X509Certificate2.CreateFromPem(pem, key);
+        try {
+            using var ephemeralCertificate = X509Certificate2.CreateFromPem(pem, key);
+            var pkcs12 = ephemeralCertificate.Export(X509ContentType.Pkcs12);
+            certificate = X509CertificateLoader.LoadPkcs12(
+                pkcs12,
+                password: (string?) null,
+                X509KeyStorageFlags.PersistKeySet |
+                X509KeyStorageFlags.MachineKeySet |
+                X509KeyStorageFlags.Exportable
+            );
             return true;
-        }
-        catch (CryptographicException e)
-        {
+        } catch (CryptographicException e) {
             Logger.LogError(e, "Could not create certificate from PEM files");
             return false;
         }

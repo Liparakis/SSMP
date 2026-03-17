@@ -63,7 +63,11 @@ internal sealed class MmsWebSocketHandler : IDisposable {
     /// <param name="hostToken">Bearer token used to authenticate the WebSocket URL.</param>
     public void Start(string hostToken) {
         var runVersion = InvalidateActiveRun();
-        Task.Run(() => RunAsync(hostToken, runVersion));
+        MmsUtilities.RunBackground(
+            RunAsync(hostToken, runVersion),
+            nameof(MmsWebSocketHandler),
+            "host WebSocket listener"
+        );
     }
 
     /// <summary>
@@ -156,25 +160,21 @@ internal sealed class MmsWebSocketHandler : IDisposable {
     }
 
     /// <summary>
-    /// Cancels and disposes any active run and returns the next valid version number.
+    /// Cancels any active run and returns the next valid version number.
     /// </summary>
     /// <returns>The generation number that should be used by the next background run.</returns>
     private int InvalidateActiveRun() {
         CancellationTokenSource? previousCts;
-        ClientWebSocket? previousSocket;
         int nextVersion;
 
         lock (_stateGate) {
             previousCts = _cts;
-            previousSocket = _socket;
             _cts = null;
             _socket = null;
             nextVersion = unchecked(++_runVersion);
         }
 
         previousCts?.Cancel();
-        previousCts?.Dispose();
-        previousSocket?.Dispose();
         return nextVersion;
     }
 

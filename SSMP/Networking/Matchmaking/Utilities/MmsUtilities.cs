@@ -14,14 +14,24 @@ namespace SSMP.Networking.Matchmaking.Utilities;
 /// General-purpose utility helpers shared across MMS components.
 /// All methods are stateless and free of side-effects.
 /// </summary>
-internal static class MmsUtilities
-{
+internal static class MmsUtilities {
     /// <summary>
     /// Converts an HTTP or HTTPS URL to its WebSocket equivalent.
     /// <c>http://</c> -> <c>ws://</c> and <c>https://</c> -> <c>wss://</c>.
     /// </summary>
-    public static string ToWebSocketUrl(string httpUrl) =>
-        httpUrl.Replace("http://", "ws://").Replace("https://", "wss://");
+    public static string ToWebSocketUrl(string httpUrl) {
+        if (!Uri.TryCreate(httpUrl, UriKind.Absolute, out var uri))
+            throw new ArgumentException("Matchmaking URL must be an absolute URI.", nameof(httpUrl));
+
+        var scheme = uri.Scheme switch {
+            "http" => "ws",
+            "https" => "wss",
+            _ => throw new ArgumentException("Matchmaking URL must use http or https.", nameof(httpUrl))
+        };
+
+        var builder = new UriBuilder(uri) { Scheme = scheme };
+        return builder.Uri.AbsoluteUri.TrimEnd('/');
+    }
 
     /// <summary>
     /// Returns the JSON literal for a boolean value: <c>"true"</c> or <c>"false"</c>.
@@ -51,15 +61,13 @@ internal static class MmsUtilities
         ClientWebSocket socket,
         CancellationToken cancellationToken,
         int maxMessageBytes = 16 * 1024
-    )
-    {
+    ) {
         const int chunkSize = 1024;
 
         var buffer = new byte[chunkSize];
         var writer = new ArrayBufferWriter<byte>();
 
-        while (true)
-        {
+        while (true) {
             var frame = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
             if (frame.MessageType == WebSocketMessageType.Close)
                 return (frame.MessageType, null);
@@ -71,7 +79,8 @@ internal static class MmsUtilities
 
             return frame.MessageType != WebSocketMessageType.Text
                 ? (frame.MessageType, null)
-                : (frame.MessageType, writer.WrittenCount == 0 ? string.Empty : Encoding.UTF8.GetString(writer.WrittenSpan));
+                : (frame.MessageType,
+                    writer.WrittenCount == 0 ? string.Empty : Encoding.UTF8.GetString(writer.WrittenSpan));
         }
     }
 
@@ -83,16 +92,12 @@ internal static class MmsUtilities
     /// The local IP address as a string, or <c>null</c> if the address could not
     /// be determined (e.g. no network interface available).
     /// </returns>
-    public static string? GetLocalIpAddress()
-    {
-        try
-        {
+    public static string? GetLocalIpAddress() {
+        try {
             using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0);
             socket.Connect("8.8.8.8", 65530);
             return (socket.LocalEndPoint as IPEndPoint)?.Address.ToString();
-        }
-        catch
-        {
+        } catch {
             return null;
         }
     }
@@ -103,11 +108,14 @@ internal static class MmsUtilities
     /// <param name="task">The task being observed.</param>
     /// <param name="owner">Component name included in failure logs.</param>
     /// <param name="operationName">Human-readable operation label for diagnostics.</param>
-    private static async Task ObserveAsync(Task task, string owner, string operationName)
-    {
-        try { await task.ConfigureAwait(false); }
-        catch (OperationCanceledException) { /*ignored*/ }
-        catch (Exception ex) { Logger.Warn($"{owner}: {operationName} failed: {ex.Message}"); }
+    private static async Task ObserveAsync(Task task, string owner, string operationName) {
+        try {
+            await task.ConfigureAwait(false);
+        } catch (OperationCanceledException) {
+            /*ignored*/
+        } catch (Exception ex) {
+            Logger.Warn($"{owner}: {operationName} failed: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -117,8 +125,7 @@ internal static class MmsUtilities
     /// <param name="buffer">Scratch receive buffer containing the latest frame bytes.</param>
     /// <param name="count">Number of valid bytes currently in <paramref name="buffer"/>.</param>
     /// <param name="maxMessageBytes">Maximum total message size allowed.</param>
-    private static void AppendFrame(ArrayBufferWriter<byte> writer, byte[] buffer, int count, int maxMessageBytes)
-    {
+    private static void AppendFrame(ArrayBufferWriter<byte> writer, byte[] buffer, int count, int maxMessageBytes) {
         if (count <= 0)
             return;
 

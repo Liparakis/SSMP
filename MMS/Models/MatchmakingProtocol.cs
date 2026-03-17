@@ -13,4 +13,9 @@ internal static class MatchmakingProtocol {
     /// Error code returned when a client must update before using matchmaking.
     /// </summary>
     public const string UpdateRequiredErrorCode = "update_required";
+
+    /// <summary>
+    /// Offset applied before issuing synchronized <c>start_punch</c> instructions.
+    /// </summary>
+    public const int PunchTimingOffsetMs = 250;
 }

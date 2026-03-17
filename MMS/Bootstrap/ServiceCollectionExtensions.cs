@@ -1,3 +1,4 @@
+using System.Net;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
@@ -11,14 +12,12 @@ namespace MMS.Bootstrap;
 /// <summary>
 /// Extension methods for registering MMS services and infrastructure concerns.
 /// </summary>
-internal static class ServiceCollectionExtensions
-{
+internal static class ServiceCollectionExtensions {
     /// <summary>
     /// Registers MMS application services and hosted background services.
     /// </summary>
     /// <param name="services">The service collection being configured.</param>
-    public static void AddMmsCoreServices(this IServiceCollection services)
-    {
+    public static void AddMmsCoreServices(this IServiceCollection services) {
         services.AddSingleton<LobbyNameService>();
         services.AddSingleton<LobbyService>();
         services.AddSingleton<JoinSessionStore>();
@@ -33,11 +32,15 @@ internal static class ServiceCollectionExtensions
     /// Registers logging, forwarded headers, HTTP logging, and rate limiting for MMS.
     /// </summary>
     /// <param name="services">The service collection being configured.</param>
+    /// <param name="configuration">The application configuration, used to bind infrastructure settings such as forwarded header options.</param>
     /// <param name="isDevelopment">Whether the app is running in development.</param>
-    public static void AddMmsInfrastructure(this IServiceCollection services, bool isDevelopment)
-    {
+    public static void AddMmsInfrastructure(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        bool isDevelopment
+    ) {
         services.AddMmsLogging(isDevelopment);
-        services.AddMmsForwardedHeaders();
+        services.AddMmsForwardedHeaders(configuration);
         services.AddMmsRateLimiting();
     }
 
@@ -47,18 +50,17 @@ internal static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection being configured.</param>
     /// <param name="isDevelopment">Whether the app is running in development.</param>
-    private static void AddMmsLogging(this IServiceCollection services, bool isDevelopment)
-    {
-        services.AddLogging(builder =>
-        {
-            builder.ClearProviders();
-            builder.AddSimpleConsole(options =>
-            {
-                options.SingleLine = true;
-                options.IncludeScopes = false;
-                options.TimestampFormat = "HH:mm:ss ";
-            });
-        });
+    private static void AddMmsLogging(this IServiceCollection services, bool isDevelopment) {
+        services.AddLogging(builder => {
+                builder.ClearProviders();
+                builder.AddSimpleConsole(options => {
+                        options.SingleLine = true;
+                        options.IncludeScopes = false;
+                        options.TimestampFormat = "HH:mm:ss ";
+                    }
+                );
+            }
+        );
 
         if (isDevelopment)
             services.AddHttpLogging(_ => { });
@@ -70,15 +72,60 @@ internal static class ServiceCollectionExtensions
     /// and <c>X-Forwarded-Proto</c> headers.
     /// </summary>
     /// <param name="services">The service collection being configured.</param>
-    private static void AddMmsForwardedHeaders(this IServiceCollection services)
-    {
-        services.Configure<ForwardedHeadersOptions>(options =>
-        {
-            options.ForwardedHeaders =
-                ForwardedHeaders.XForwardedFor |
-                ForwardedHeaders.XForwardedHost |
-                ForwardedHeaders.XForwardedProto;
-        });
+    /// <param name="configuration">
+    /// The application configuration. Reads <c>ForwardedHeaders:KnownProxies</c> as an array of IP address strings
+    /// and <c>ForwardedHeaders:KnownNetworks</c> as an array of CIDR notation strings to populate
+    /// <see cref="ForwardedHeadersOptions.KnownProxies"/> and <see cref="ForwardedHeadersOptions.KnownNetworks"/> respectively.
+    /// </param>
+    private static void AddMmsForwardedHeaders(this IServiceCollection services, IConfiguration configuration) {
+        services.Configure<ForwardedHeadersOptions>(options => {
+                options.ForwardedHeaders =
+                    ForwardedHeaders.XForwardedFor |
+                    ForwardedHeaders.XForwardedHost |
+                    ForwardedHeaders.XForwardedProto;
+
+                foreach (var proxy in configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? []) {
+                    if (IPAddress.TryParse(proxy, out var address))
+                        options.KnownProxies.Add(address);
+                }
+
+                foreach (var network in configuration.GetSection("ForwardedHeaders:KnownNetworks").Get<string[]>() ??
+                                        []) {
+                    if (!TryParseNetwork(network, out var ipNetwork))
+                        continue;
+
+                    options.KnownNetworks.Add(ipNetwork);
+                }
+            }
+        );
+    }
+
+    /// <summary>
+    /// Attempts to parse a CIDR notation string into an <see cref="Microsoft.AspNetCore.HttpOverrides.IPNetwork"/>.
+    /// </summary>
+    /// <param name="value">The CIDR string to parse, expected in the format <c>address/prefixLength</c> (e.g. <c>192.168.1.0/24</c>).</param>
+    /// <param name="network">
+    /// When this method returns <see langword="true"/>, contains the parsed <see cref="Microsoft.AspNetCore.HttpOverrides.IPNetwork"/>;
+    /// otherwise, the default value.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> if <paramref name="value"/> was successfully parsed; otherwise, <see langword="false"/>.
+    /// </returns>
+    private static bool TryParseNetwork(string value, out Microsoft.AspNetCore.HttpOverrides.IPNetwork network) {
+        network = null!;
+
+        var slashIndex = value.IndexOf('/');
+        if (slashIndex <= 0 || slashIndex >= value.Length - 1)
+            return false;
+
+        var prefixText = value[(slashIndex + 1)..];
+        if (!IPAddress.TryParse(value[..slashIndex], out var prefix) ||
+            !int.TryParse(prefixText, out var prefixLength)) {
+            return false;
+        }
+
+        network = new Microsoft.AspNetCore.HttpOverrides.IPNetwork(prefix, prefixLength);
+        return true;
     }
 
     /// <summary>
@@ -94,23 +141,21 @@ internal static class ServiceCollectionExtensions
     /// </list>
     /// </remarks>
     /// <param name="services">The service collection being configured.</param>
-    private static void AddMmsRateLimiting(this IServiceCollection services)
-    {
-        services.AddRateLimiter(options =>
-        {
-            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-            options.OnRejected = async (context, token) =>
-            {
-                await context.HttpContext.Response.WriteAsJsonAsync(
-                    new ErrorResponse("Too many requests. Please try again later."),
-                    cancellationToken: token
-                );
-            };
+    private static void AddMmsRateLimiting(this IServiceCollection services) {
+        services.AddRateLimiter(options => {
+                options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+                options.OnRejected = async (context, token) => {
+                    await context.HttpContext.Response.WriteAsJsonAsync(
+                        new ErrorResponse("Too many requests. Please try again later."),
+                        cancellationToken: token
+                    );
+                };
 
-            options.AddFixedWindowPolicy("create", permitLimit: 5,  windowSeconds: 30);
-            options.AddFixedWindowPolicy("search", permitLimit: 10, windowSeconds: 10);
-            options.AddFixedWindowPolicy("join",   permitLimit: 5,  windowSeconds: 30);
-        });
+                options.AddFixedWindowPolicy("create", permitLimit: 5, windowSeconds: 30);
+                options.AddFixedWindowPolicy("search", permitLimit: 10, windowSeconds: 10);
+                options.AddFixedWindowPolicy("join", permitLimit: 5, windowSeconds: 30);
+            }
+        );
     }
 
     /// <summary>
@@ -124,14 +169,13 @@ internal static class ServiceCollectionExtensions
         this RateLimiterOptions options,
         string policyName,
         int permitLimit,
-        int windowSeconds)
-    {
+        int windowSeconds
+    ) {
         options.AddPolicy(
             policyName,
             context => RateLimitPartition.GetFixedWindowLimiter(
                 partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                factory: _ => new FixedWindowRateLimiterOptions
-                {
+                factory: _ => new FixedWindowRateLimiterOptions {
                     PermitLimit = permitLimit,
                     Window = TimeSpan.FromSeconds(windowSeconds),
                     QueueLimit = 0

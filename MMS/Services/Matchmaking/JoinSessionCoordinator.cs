@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using MMS.Models;
 using MMS.Models.Matchmaking;
 using MMS.Services.Lobby;
 using MMS.Services.Utility;
@@ -13,9 +14,8 @@ public sealed class JoinSessionCoordinator(
     JoinSessionStore store,
     JoinSessionMessenger messenger,
     LobbyService lobbyService,
-    ILogger<JoinSessionCoordinator> logger)
-{
-
+    ILogger<JoinSessionCoordinator> logger
+) {
     /// <summary>
     /// Allocates a new join session for a client attempting to connect to <paramref name="lobby"/>.
     /// </summary>
@@ -24,16 +24,14 @@ public sealed class JoinSessionCoordinator(
     /// <returns>
     /// The new <see cref="JoinSession"/>, or <see langword="null"/> for Steam lobbies
     /// </returns>
-    public JoinSession? CreateJoinSession(_Lobby lobby, string clientIp)
-    {
+    public JoinSession? CreateJoinSession(_Lobby lobby, string clientIp) {
         if (lobby.LobbyType.Equals("steam", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        var session = new JoinSession
-        {
-            JoinId               = TokenGenerator.GenerateToken(32),
-            LobbyConnectionData  = lobby.ConnectionData,
-            ClientIp             = clientIp,
+        var session = new JoinSession {
+            JoinId = TokenGenerator.GenerateToken(32),
+            LobbyConnectionData = lobby.ConnectionData,
+            ClientIp = clientIp,
             ClientDiscoveryToken = TokenGenerator.GenerateToken(32)
         };
 
@@ -54,8 +52,7 @@ public sealed class JoinSessionCoordinator(
     /// </summary>
     /// <param name="joinId">The join session identifier.</param>
     /// <returns>The session, or <see langword="null"/> if not found or expired.</returns>
-    public JoinSession? GetJoinSession(string joinId)
-    {
+    public JoinSession? GetJoinSession(string joinId) {
         if (!store.TryGet(joinId, out var session) || session == null)
             return null;
 
@@ -72,8 +69,7 @@ public sealed class JoinSessionCoordinator(
     /// <param name="joinId">The join session identifier.</param>
     /// <param name="webSocket">The client's WebSocket connection.</param>
     /// <returns><see langword="true"/> if the session was found and the socket was attached.</returns>
-    public bool AttachJoinWebSocket(string joinId, WebSocket webSocket)
-    {
+    public bool AttachJoinWebSocket(string joinId, WebSocket webSocket) {
         var session = GetJoinSession(joinId);
         if (session == null) return false;
 
@@ -91,15 +87,13 @@ public sealed class JoinSessionCoordinator(
     /// <param name="token">The discovery token included in the UDP packet.</param>
     /// <param name="port">The external port observed by the server.</param>
     /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
-    public async Task SetDiscoveredPortAsync(string token, int port, CancellationToken cancellationToken = default)
-    {
+    public async Task SetDiscoveredPortAsync(string token, int port, CancellationToken cancellationToken = default) {
         if (!store.TryGetDiscoveryMetadata(token, out var metadata) || metadata == null)
             return;
 
         metadata.DiscoveredPort = port;
 
-        if (metadata.HostConnectionData != null)
-        {
+        if (metadata.HostConnectionData != null) {
             await HandleHostPortDiscoveredAsync(metadata.HostConnectionData, port, cancellationToken);
             return;
         }
@@ -120,8 +114,7 @@ public sealed class JoinSessionCoordinator(
     /// </summary>
     /// <param name="joinId">The join session identifier.</param>
     /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
-    public Task SendBeginClientMappingAsync(string joinId, CancellationToken cancellationToken)
-    {
+    public Task SendBeginClientMappingAsync(string joinId, CancellationToken cancellationToken) {
         var session = GetJoinSession(joinId);
         return session == null
             ? Task.CompletedTask
@@ -136,8 +129,7 @@ public sealed class JoinSessionCoordinator(
     /// <returns>
     /// <see langword="true"/> if the refresh message was dispatched successfully.
     /// </returns>
-    public async Task<bool> SendHostRefreshRequestAsync(string joinId, CancellationToken cancellationToken)
-    {
+    public async Task<bool> SendHostRefreshRequestAsync(string joinId, CancellationToken cancellationToken) {
         var session = GetJoinSession(joinId);
         return session != null &&
                await messenger.SendHostRefreshRequestAsync(joinId, session.LobbyConnectionData, cancellationToken);
@@ -149,26 +141,23 @@ public sealed class JoinSessionCoordinator(
     /// <param name="joinId">The join session identifier.</param>
     /// <param name="reason">A short machine-readable failure reason (e.g. <c>"host_unreachable"</c>).</param>
     /// <param name="cancellationToken">Propagates notification that the operation should be cancelled.</param>
-    public async Task FailJoinSessionAsync(string joinId, string reason, CancellationToken cancellationToken = default)
-    {
+    public async Task FailJoinSessionAsync(
+        string joinId,
+        string reason,
+        CancellationToken cancellationToken = default
+    ) {
         var session = GetJoinSession(joinId);
         if (session == null) return;
 
-        try
-        {
+        try {
             await JoinSessionMessenger.SendJoinFailedToClientAsync(session, reason, cancellationToken);
-        }
-        catch (Exception ex) when (IsSocketSendFailure(ex))
-        {
+        } catch (Exception ex) when (IsSocketSendFailure(ex)) {
             logger.LogDebug(ex, "Failed to notify join client for {JoinId}", joinId);
         }
 
-        try
-        {
+        try {
             await messenger.SendJoinFailedToHostAsync(session.LobbyConnectionData, joinId, reason, cancellationToken);
-        }
-        catch (Exception ex) when (IsSocketSendFailure(ex))
-        {
+        } catch (Exception ex) when (IsSocketSendFailure(ex)) {
             logger.LogDebug(ex, "Failed to notify host about join failure for {JoinId}", joinId);
         }
 
@@ -182,8 +171,7 @@ public sealed class JoinSessionCoordinator(
     /// Discovery tokens are considered stale after 2 minutes, giving them a longer
     /// grace period than sessions to handle timing edge cases.
     /// </remarks>
-    public void CleanupExpiredSessions()
-    {
+    public void CleanupExpiredSessions() {
         var now = DateTime.UtcNow;
 
         foreach (var joinId in store.GetExpiredJoinIds(now))
@@ -198,8 +186,7 @@ public sealed class JoinSessionCoordinator(
     /// Called when a lobby is closed or evicted.
     /// </summary>
     /// <param name="lobby">The lobby being removed.</param>
-    public void CleanupSessionsForLobby(_Lobby lobby)
-    {
+    public void CleanupSessionsForLobby(_Lobby lobby) {
         foreach (var joinId in store.GetJoinIdsForLobby(lobby.ConnectionData))
             CleanupJoinSession(joinId);
 
@@ -211,8 +198,7 @@ public sealed class JoinSessionCoordinator(
     /// Registers the host discovery token for a lobby if it is not already tracked.
     /// This ensures the server can correlate the host's UDP packet with the correct lobby.
     /// </summary>
-    private void RegisterHostDiscoveryTokenIfAbsent(_Lobby lobby)
-    {
+    private void RegisterHostDiscoveryTokenIfAbsent(_Lobby lobby) {
         if (lobby.HostDiscoveryToken == null || store.ContainsDiscoveryToken(lobby.HostDiscoveryToken))
             return;
 
@@ -229,8 +215,8 @@ public sealed class JoinSessionCoordinator(
     private async Task HandleHostPortDiscoveredAsync(
         string lobbyConnectionData,
         int port,
-        CancellationToken cancellationToken)
-    {
+        CancellationToken cancellationToken
+    ) {
         var lobby = lobbyService.GetLobby(lobbyConnectionData);
         if (lobby == null) return;
 
@@ -246,8 +232,8 @@ public sealed class JoinSessionCoordinator(
     private async Task HandleClientPortDiscoveredAsync(
         string joinId,
         int port,
-        CancellationToken cancellationToken)
-    {
+        CancellationToken cancellationToken
+    ) {
         var session = GetJoinSession(joinId);
         if (session == null) return;
 
@@ -260,8 +246,7 @@ public sealed class JoinSessionCoordinator(
             cancellationToken
         );
 
-        if (!hostRefreshed)
-        {
+        if (!hostRefreshed) {
             await FailJoinSessionAsync(joinId, "host_unreachable", cancellationToken);
             return;
         }
@@ -275,8 +260,8 @@ public sealed class JoinSessionCoordinator(
     /// </summary>
     private async Task TryStartPendingJoinSessionsAsync(
         string lobbyConnectionData,
-        CancellationToken cancellationToken)
-    {
+        CancellationToken cancellationToken
+    ) {
         foreach (var joinId in store.GetJoinIdsForLobby(lobbyConnectionData))
             await TryStartJoinSessionAsync(joinId, cancellationToken);
     }
@@ -288,26 +273,22 @@ public sealed class JoinSessionCoordinator(
     /// The host is notified first so a late host disconnect cannot leave the client punching alone.
     /// Any socket failure while dispatching the pair is converted into a join failure.
     /// </remarks>
-    private async Task TryStartJoinSessionAsync(string joinId, CancellationToken cancellationToken)
-    {
+    private async Task TryStartJoinSessionAsync(string joinId, CancellationToken cancellationToken) {
         var session = GetJoinSession(joinId);
         if (session?.ClientExternalPort == null) return;
 
         var lobby = lobbyService.GetLobby(session.LobbyConnectionData);
-        if (lobby == null)
-        {
+        if (lobby == null) {
             await FailJoinSessionAsync(joinId, "lobby_closed", cancellationToken);
             return;
         }
 
-        if (lobby.HostWebSocket is not { State: WebSocketState.Open })
-        {
+        if (lobby.HostWebSocket is not { State: WebSocketState.Open }) {
             await FailJoinSessionAsync(joinId, "host_unreachable", cancellationToken);
             return;
         }
 
-        if (session.ClientWebSocket is not { State: WebSocketState.Open })
-        {
+        if (session.ClientWebSocket is not { State: WebSocketState.Open }) {
             await FailJoinSessionAsync(joinId, "client_disconnected", cancellationToken);
             return;
         }
@@ -315,11 +296,12 @@ public sealed class JoinSessionCoordinator(
         // Host port is not yet known so we wait for the next host discovery event.
         if (lobby.ExternalPort == null) return;
 
-        var hostIp      = lobby.ConnectionData.Split(':')[0];
-        var startTimeMs = DateTimeOffset.UtcNow.AddMilliseconds(250).ToUnixTimeMilliseconds();
+        var hostIp = lobby.ConnectionData.Split(':')[0];
+        var startTimeMs = DateTimeOffset.UtcNow
+                                        .AddMilliseconds(MatchmakingProtocol.PunchTimingOffsetMs)
+                                        .ToUnixTimeMilliseconds();
 
-        try
-        {
+        try {
             var hostSent = await JoinSessionMessenger.SendStartPunchToHostAsync(
                 lobby,
                 joinId,
@@ -329,8 +311,7 @@ public sealed class JoinSessionCoordinator(
                 startTimeMs,
                 cancellationToken
             );
-            if (!hostSent)
-            {
+            if (!hostSent) {
                 await FailJoinSessionAsync(joinId, "host_unreachable", cancellationToken);
                 return;
             }
@@ -342,14 +323,11 @@ public sealed class JoinSessionCoordinator(
                 startTimeMs,
                 cancellationToken
             );
-            if (!clientSent)
-            {
+            if (!clientSent) {
                 await FailJoinSessionAsync(joinId, "client_disconnected", cancellationToken);
                 return;
             }
-        }
-        catch (Exception ex) when (IsSocketSendFailure(ex))
-        {
+        } catch (Exception ex) when (IsSocketSendFailure(ex)) {
             logger.LogDebug(ex, "Failed to dispatch start_punch for join {JoinId}", joinId);
             await FailJoinSessionAsync(joinId, "host_unreachable", cancellationToken);
             return;
@@ -362,15 +340,13 @@ public sealed class JoinSessionCoordinator(
     /// Removes a session and its client discovery token from the store,
     /// then performs a best-effort close of the client WebSocket.
     /// </summary>
-    private void CleanupJoinSession(string joinId)
-    {
+    private void CleanupJoinSession(string joinId) {
         if (!store.Remove(joinId, out var session) || session == null) return;
 
         store.RemoveDiscoveryToken(session.ClientDiscoveryToken);
 
-        if (session.ClientWebSocket is not { State: WebSocketState.Open } ws) return;
-
-        _ = CloseJoinSocketAsync(ws, joinId);
+        if (session.ClientWebSocket is { State: WebSocketState.Open } ws)
+            _ = CloseJoinSocketAsync(ws, joinId);
     }
 
     /// <summary>
@@ -378,15 +354,11 @@ public sealed class JoinSessionCoordinator(
     /// </summary>
     /// <param name="webSocket">The client WebSocket to close.</param>
     /// <param name="joinId">Join identifier used for debug logging.</param>
-    private async Task CloseJoinSocketAsync(WebSocket webSocket, string joinId)
-    {
-        try
-        {
+    private async Task CloseJoinSocketAsync(WebSocket webSocket, string joinId) {
+        try {
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "join complete", timeoutCts.Token);
-        }
-        catch (Exception ex) when (IsSocketSendFailure(ex) || ex is OperationCanceledException)
-        {
+        } catch (Exception ex) when (IsSocketSendFailure(ex) || ex is OperationCanceledException) {
             logger.LogDebug(ex, "Failed to close client join WebSocket for join {JoinId}", joinId);
         }
     }

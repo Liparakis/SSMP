@@ -14,20 +14,19 @@ namespace MMS.Features.Lobby;
 /// <summary>
 /// Contains handler and validation logic for lobby-oriented MMS endpoints.
 /// </summary>
-internal static partial class LobbyEndpoints
-{
+internal static partial class LobbyEndpoints {
     /// <summary>
     /// Returns all lobbies, optionally filtered by type.
     /// </summary>
-    private static IResult GetLobbies(LobbyService lobbyService, string? type = null)
-    {
+    private static IResult GetLobbies(LobbyService lobbyService, string? type = null) {
         var lobbies = lobbyService.GetLobbies(type)
                                   .Select(l => new LobbyResponse(
-                                      l.AdvertisedConnectionData,
-                                      l.LobbyName,
-                                      l.LobbyType,
-                                      l.LobbyCode
-                                  ));
+                                          l.AdvertisedConnectionData,
+                                          l.LobbyName,
+                                          l.LobbyType,
+                                          l.LobbyCode
+                                      )
+                                  );
         return TypedResults.Ok(lobbies);
     }
 
@@ -38,8 +37,8 @@ internal static partial class LobbyEndpoints
         CreateLobbyRequest request,
         LobbyService lobbyService,
         LobbyNameService lobbyNameService,
-        HttpContext context)
-    {
+        HttpContext context
+    ) {
         var lobbyType = request.LobbyType ?? "matchmaking";
 
         if (!string.Equals(lobbyType, "steam", StringComparison.OrdinalIgnoreCase) &&
@@ -86,8 +85,7 @@ internal static partial class LobbyEndpoints
     /// Retained for compatibility. The active matchmaking client flow uses the WebSocket
     /// rendezvous instead of polling this endpoint.
     /// </remarks>
-    private static IResult VerifyDiscovery(string token, JoinSessionService joinService)
-    {
+    private static IResult VerifyDiscovery(string token, JoinSessionService joinService) {
         var port = joinService.GetDiscoveredPort(token);
         return port is null
             ? TypedResults.Ok(new StatusResponse("pending"))
@@ -100,8 +98,8 @@ internal static partial class LobbyEndpoints
     private static Results<NoContent, NotFound<ErrorResponse>> CloseLobby(
         string token,
         LobbyService lobbyService,
-        JoinSessionService joinService)
-    {
+        JoinSessionService joinService
+    ) {
         if (!lobbyService.RemoveLobbyByToken(token, joinService.CleanupSessionsForLobby))
             return TypedResults.NotFound(new ErrorResponse("Lobby not found"));
 
@@ -115,8 +113,8 @@ internal static partial class LobbyEndpoints
     private static Results<Ok<StatusResponse>, NotFound<ErrorResponse>> Heartbeat(
         string token,
         HeartbeatRequest request,
-        LobbyService lobbyService)
-    {
+        LobbyService lobbyService
+    ) {
         return lobbyService.Heartbeat(token, request.ConnectedPlayers)
             ? TypedResults.Ok(new StatusResponse("alive"))
             : TypedResults.NotFound(new ErrorResponse("Lobby not found"));
@@ -130,8 +128,8 @@ internal static partial class LobbyEndpoints
         JoinLobbyRequest request,
         LobbyService lobbyService,
         JoinSessionService joinService,
-        HttpContext context)
-    {
+        HttpContext context
+    ) {
         var lobby = lobbyService.GetLobbyByCode(connectionData) ?? lobbyService.GetLobby(connectionData);
         if (lobby == null)
             return TypedResults.NotFound(new ErrorResponse("Lobby not found"));
@@ -152,8 +150,7 @@ internal static partial class LobbyEndpoints
 
         var lanConnectionData = TryResolveLanConnectionData(lobby, clientIp);
 
-        if (!string.Equals(lobby.LobbyType, "matchmaking", StringComparison.OrdinalIgnoreCase))
-        {
+        if (!string.Equals(lobby.LobbyType, "matchmaking", StringComparison.OrdinalIgnoreCase)) {
             return TypedResults.Ok(
                 new JoinResponse(
                     lobby.AdvertisedConnectionData,
@@ -192,15 +189,13 @@ internal static partial class LobbyEndpoints
         string lobbyType,
         HttpContext context,
         out string connectionData,
-        out IResult? error)
-    {
+        out IResult? error
+    ) {
         connectionData = string.Empty;
         error = null;
 
-        if (string.Equals(lobbyType, "steam", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrEmpty(request.ConnectionData))
-            {
+        if (string.Equals(lobbyType, "steam", StringComparison.OrdinalIgnoreCase)) {
+            if (string.IsNullOrEmpty(request.ConnectionData)) {
                 error = TypedResults.BadRequest(new ErrorResponse("Steam lobby requires ConnectionData"));
                 return false;
             }
@@ -210,14 +205,12 @@ internal static partial class LobbyEndpoints
         }
 
         var rawHostIp = request.HostIp ?? context.Connection.RemoteIpAddress?.ToString();
-        if (string.IsNullOrEmpty(rawHostIp) || !IPAddress.TryParse(rawHostIp, out var parsedHostIp))
-        {
+        if (string.IsNullOrEmpty(rawHostIp) || !IPAddress.TryParse(rawHostIp, out var parsedHostIp)) {
             error = TypedResults.BadRequest(new ErrorResponse("Invalid IP address"));
             return false;
         }
 
-        if (request.HostPort is null or <= 0 or > 65535)
-        {
+        if (request.HostPort is null or <= 0 or > 65535) {
             error = TypedResults.BadRequest(new ErrorResponse("Invalid port number"));
             return false;
         }
@@ -233,21 +226,19 @@ internal static partial class LobbyEndpoints
         JoinLobbyRequest request,
         HttpContext context,
         out string clientIp,
-        out IResult? error)
-    {
+        out IResult? error
+    ) {
         clientIp = string.Empty;
         error = null;
 
         var rawClientIp = request.ClientIp ?? context.Connection.RemoteIpAddress?.ToString();
-        if (string.IsNullOrEmpty(rawClientIp) || !IPAddress.TryParse(rawClientIp, out var parsedIp))
-        {
-            error = TypedResults.NotFound(new ErrorResponse("Invalid IP address"));
+        if (string.IsNullOrEmpty(rawClientIp) || !IPAddress.TryParse(rawClientIp, out var parsedIp)) {
+            error = TypedResults.BadRequest(new ErrorResponse("Invalid IP address"));
             return false;
         }
 
-        if (request.ClientPort is <= 0 or > 65535)
-        {
-            error = TypedResults.NotFound(new ErrorResponse("Invalid port"));
+        if (request.ClientPort is <= 0 or > 65535) {
+            error = TypedResults.BadRequest(new ErrorResponse("Invalid port"));
             return false;
         }
 
@@ -258,8 +249,7 @@ internal static partial class LobbyEndpoints
     /// <summary>
     /// Returns the host LAN address when the joining client shares the host's WAN IP.
     /// </summary>
-    private static string? TryResolveLanConnectionData(_Lobby lobby, string clientIp)
-    {
+    private static string? TryResolveLanConnectionData(_Lobby lobby, string clientIp) {
         if (string.IsNullOrEmpty(lobby.HostLanIp))
             return null;
 

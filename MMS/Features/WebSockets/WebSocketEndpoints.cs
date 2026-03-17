@@ -15,8 +15,7 @@ namespace MMS.Features.WebSockets;
 /// <summary>
 /// Maps WebSocket endpoints used by hosts and matchmaking join sessions.
 /// </summary>
-internal static class WebSocketEndpoints
-{
+internal static class WebSocketEndpoints {
     /// <summary>
     /// Maps all MMS WebSocket endpoints onto the provided route group builders.
     /// </summary>
@@ -24,8 +23,8 @@ internal static class WebSocketEndpoints
     /// <param name="joinWebSockets">The grouped route builder for <c>/ws/join</c> routes.</param>
     public static void MapWebSocketEndpoints(
         RouteGroupBuilder webSockets,
-        RouteGroupBuilder joinWebSockets)
-    {
+        RouteGroupBuilder joinWebSockets
+    ) {
         webSockets.Endpoint()
                   .Map("/{token}")
                   .Handler(HandleHostWebSocketAsync)
@@ -44,17 +43,15 @@ internal static class WebSocketEndpoints
     private static async Task HandleHostWebSocketAsync(
         HttpContext context,
         string token,
-        LobbyService lobbyService)
-    {
-        if (!context.WebSockets.IsWebSocketRequest)
-        {
+        LobbyService lobbyService
+    ) {
+        if (!context.WebSockets.IsWebSocketRequest) {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             return;
         }
 
         var lobby = lobbyService.GetLobbyByToken(token);
-        if (lobby == null)
-        {
+        if (lobby == null) {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
@@ -81,24 +78,17 @@ internal static class WebSocketEndpoints
     /// The host WebSocket is receive-only; all meaningful communication is server-to-host push.
     /// </summary>
     /// <param name="webSocket">The accepted host WebSocket.</param>
-    private static async Task DrainHostWebSocketAsync(WebSocket webSocket)
-    {
+    private static async Task DrainHostWebSocketAsync(WebSocket webSocket) {
         var buffer = new byte[1024];
-        try
-        {
-            while (webSocket.State == WebSocketState.Open)
-            {
+        try {
+            while (webSocket.State == WebSocketState.Open) {
                 var result = await webSocket.ReceiveAsync(buffer, CancellationToken.None);
                 if (result.MessageType == WebSocketMessageType.Close)
                     break;
             }
-        }
-        catch (WebSocketException)
-        {
+        } catch (WebSocketException) {
             // Host disconnected without a proper close handshake.
-        }
-        catch (Exception ex) when (ex.InnerException is SocketException)
-        {
+        } catch (Exception ex) when (ex.InnerException is SocketException) {
             // Connection was forcibly reset during shutdown or game exit.
         }
     }
@@ -112,10 +102,9 @@ internal static class WebSocketEndpoints
         HttpContext context,
         string joinId,
         LobbyService lobbyService,
-        JoinSessionService joinService)
-    {
-        if (!context.WebSockets.IsWebSocketRequest)
-        {
+        JoinSessionService joinService
+    ) {
+        if (!context.WebSockets.IsWebSocketRequest) {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             return;
         }
@@ -124,16 +113,18 @@ internal static class WebSocketEndpoints
             return;
 
         var session = joinService.GetJoinSession(joinId);
-        if (session == null)
-        {
+        if (session == null) {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
 
         using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        if (!joinService.AttachJoinWebSocket(joinId, webSocket))
-        {
-            context.Response.StatusCode = StatusCodes.Status404NotFound;
+        if (!joinService.AttachJoinWebSocket(joinId, webSocket)) {
+            await webSocket.CloseAsync(
+                WebSocketCloseStatus.PolicyViolation,
+                "join session not found",
+                context.RequestAborted
+            );
             return;
         }
 
@@ -153,18 +144,21 @@ internal static class WebSocketEndpoints
     /// <returns>
     /// <see langword="true"/> if the version is acceptable; otherwise <see langword="false"/>.
     /// </returns>
-    private static bool ValidateMatchmakingVersion(HttpContext context)
-    {
+    private static bool ValidateMatchmakingVersion(HttpContext context) {
         if (MatchmakingVersionValidation.TryValidate(context.Request.Query["matchmakingVersion"]))
             return true;
 
         context.Response.StatusCode = StatusCodes.Status426UpgradeRequired;
-        context.Response.WriteAsJsonAsync(
-            new ErrorResponse(
-                "Please update to the latest version in order to use matchmaking!",
-                MatchmakingProtocol.UpdateRequiredErrorCode
-            )
-        );
+        context.Response
+               .WriteAsJsonAsync(
+                   new ErrorResponse(
+                       "Please update to the latest version in order to use matchmaking!",
+                       MatchmakingProtocol.UpdateRequiredErrorCode
+                   ),
+                   context.RequestAborted
+               )
+               .GetAwaiter()
+               .GetResult();
         return false;
     }
 
@@ -187,11 +181,10 @@ internal static class WebSocketEndpoints
         string joinId,
         JoinSession session,
         LobbyService lobbyService,
-        JoinSessionService joinService)
-    {
+        JoinSessionService joinService
+    ) {
         var lobby = lobbyService.GetLobby(session.LobbyConnectionData);
-        if (lobby?.HostWebSocket is not { State: WebSocketState.Open })
-        {
+        if (lobby?.HostWebSocket is not { State: WebSocketState.Open }) {
             await joinService.FailJoinSessionAsync(joinId, "host_unreachable", context.RequestAborted);
             return false;
         }
@@ -200,8 +193,7 @@ internal static class WebSocketEndpoints
             return true;
 
         var refreshSent = await joinService.SendHostRefreshRequestAsync(joinId, context.RequestAborted);
-        if (!refreshSent)
-        {
+        if (!refreshSent) {
             await joinService.FailJoinSessionAsync(joinId, "host_unreachable", context.RequestAborted);
             return false;
         }
@@ -222,28 +214,20 @@ internal static class WebSocketEndpoints
         WebSocket webSocket,
         string joinId,
         JoinSessionService joinService,
-        CancellationToken cancellationToken)
-    {
+        CancellationToken cancellationToken
+    ) {
         var buffer = new byte[256];
-        try
-        {
-            while (webSocket.State == WebSocketState.Open)
-            {
+        try {
+            while (webSocket.State == WebSocketState.Open) {
                 var result = await webSocket.ReceiveAsync(buffer, cancellationToken);
                 if (result.MessageType == WebSocketMessageType.Close)
                     break;
             }
-        }
-        catch (OperationCanceledException)
-        {
+        } catch (OperationCanceledException) {
             // Request was canceled so session cleanup is handled in finally.
-        }
-        catch (WebSocketException)
-        {
+        } catch (WebSocketException) {
             // Client disconnected without a proper close handshake.
-        }
-        finally
-        {
+        } finally {
             if (joinService.GetJoinSession(joinId) != null)
                 await joinService.FailJoinSessionAsync(joinId, "client_disconnected", CancellationToken.None);
         }

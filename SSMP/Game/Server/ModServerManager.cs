@@ -20,7 +20,7 @@ internal class ModServerManager : ServerManager {
     /// The UiManager instance for registering events for starting and stopping a server.
     /// </summary>
     private readonly UiManager _uiManager;
-    
+
     /// <summary>
     /// The mod settings instance for retrieving the auth key of the local player to set player save data when
     /// hosting a server.
@@ -31,13 +31,13 @@ internal class ModServerManager : ServerManager {
     /// The settings command.
     /// </summary>
     private readonly SettingsCommand _settingsCommand;
-    
+
     // /// <summary>
     // /// Save data that was loaded from selecting a save file. Will be retroactively applied to a server, if one was
     // /// requested to be started after selecting a save file.
     // /// </summary>
     // private ServerSaveData? _loadedLocalSaveData;
-    
+
     public ModServerManager(
         NetServer netServer,
         PacketManager packetManager,
@@ -53,13 +53,13 @@ internal class ModServerManager : ServerManager {
     /// <inheritdoc />
     public override void Initialize() {
         base.Initialize();
-        
+
         // Start addon loading, since all addons that are also mods should be registered during the Awake phase of
         // their MonoBehaviour
         AddonManager.LoadAddons();
 
         // Register handlers for UI events
-        _uiManager.RequestServerStartHostEvent += (_, port, _, transportType, _) => 
+        _uiManager.RequestServerStartHostEvent += (_, port, _, transportType, _) =>
             OnRequestServerStartHost(port, _modSettings.FullSynchronisation, transportType);
         _uiManager.RequestServerStopHostEvent += Stop;
         PlayerConnectEvent += _ => UpdateMatchmakingRemotePlayerCount();
@@ -82,7 +82,8 @@ internal class ModServerManager : ServerManager {
         //     // save file that the user selected
         //     ServerSaveData.GlobalSaveData = SaveManager.GetCurrentSaveData(true);
         //
-        //     // Then we import the player save data from the (potentially) loaded modded save file from the user selected
+        //     // Then we import the player save data from the (potentially) loaded modded save file from the user
+        // selected
         //     // save file
         //     if (_loadedLocalSaveData != null) {
         //         ServerSaveData.PlayerSaveData = _loadedLocalSaveData.PlayerSaveData;
@@ -121,7 +122,7 @@ internal class ModServerManager : ServerManager {
     /// <inheritdoc />
     protected override void DeregisterCommands() {
         base.DeregisterCommands();
-        
+
         CommandManager.DeregisterCommand(_settingsCommand);
     }
 
@@ -130,7 +131,9 @@ internal class ModServerManager : ServerManager {
     /// </summary>
     private void UpdateMatchmakingRemotePlayerCount() {
         var hostAuthKey = _modSettings.AuthKey;
-        var remotePlayerCount = Players.Count(player => player.AuthKey != hostAuthKey);
+        var remotePlayerCount = hostAuthKey == null
+            ? 0
+            : Players.Count(player => player.AuthKey != hostAuthKey);
         _uiManager.ConnectInterface.MmsClient.SetConnectedPlayers(remotePlayerCount);
     }
 }

@@ -52,6 +52,9 @@ internal sealed class MmsHostSessionService {
     /// <summary>The number of players currently connected to this host's session.</summary>
     private int _connectedPlayers;
 
+    /// <summary>Count of consecutive heartbeat send failures observed by the timer callback.</summary>
+    private int _heartbeatFailureCount;
+
     /// <summary>
     /// Cancellation source that controls the background UDP discovery refresh task.
     /// <c>null</c> when no refresh is running.
@@ -352,9 +355,29 @@ internal sealed class MmsHostSessionService {
     private void SendHeartbeat(object? state) {
         if (_hostToken == null) return;
 
-        _ = _http.PostJsonAsync(
+        var heartbeatTask = _http.PostJsonAsync(
             $"{_baseUrl}{MmsRoutes.LobbyHeartbeat(_hostToken)}",
             BuildHeartbeatJson(_connectedPlayers)
+        );
+        heartbeatTask.ContinueWith(
+            task => {
+                if (task.IsFaulted) {
+                    var failures = Interlocked.Increment(ref _heartbeatFailureCount);
+                    Logger.Debug($"MmsHostSessionService: heartbeat send faulted ({failures} consecutive failures)");
+                    return;
+                }
+
+                if (task.Result.success) {
+                    Interlocked.Exchange(ref _heartbeatFailureCount, 0);
+                    return;
+                }
+
+                var rejectedFailures = Interlocked.Increment(ref _heartbeatFailureCount);
+                Logger.Debug(
+                    $"MmsHostSessionService: heartbeat rejected or failed ({rejectedFailures} consecutive failures)"
+                );
+            },
+            TaskScheduler.Default
         );
     }
 
@@ -407,7 +430,7 @@ internal sealed class MmsHostSessionService {
     /// <param name="lobbyId">Lobby ID used only for logging.</param>
     private async Task SafeDeleteLobbyAsync(string hostToken, string? lobbyId) {
         try {
-            await MmsHttpClient.DeleteAsync($"{_baseUrl}{MmsRoutes.LobbyDelete(hostToken)}");
+            await _http.DeleteAsync($"{_baseUrl}{MmsRoutes.LobbyDelete(hostToken)}");
             Logger.Info($"MmsHostSessionService: closed lobby {lobbyId}");
         } catch (Exception ex) {
             Logger.Warn($"MmsHostSessionService: CloseLobby DELETE failed: {ex.Message}");
