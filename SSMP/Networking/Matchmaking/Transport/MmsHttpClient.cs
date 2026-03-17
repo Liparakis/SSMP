@@ -86,10 +86,14 @@ internal static class MmsHttpClient {
     private static MatchmakingError InspectErrorBody(HttpStatusCode status, string? body) {
         if ((int) status < 400 || body == null) return MatchmakingError.None;
 
-        var errorCode = MmsJsonParser.ExtractValue(body.AsSpan(), MmsFields.ErrorCode);
-        return errorCode == MmsProtocol.UpdateRequiredErrorCode
-            ? MatchmakingError.UpdateRequired
-            : MatchmakingError.NetworkFailure;
+        try {
+            var errorCode = MmsJsonParser.ExtractValue(body.AsSpan(), MmsFields.ErrorCode);
+            return errorCode == MmsProtocol.UpdateRequiredErrorCode
+                ? MatchmakingError.UpdateRequired
+                : MatchmakingError.NetworkFailure;
+        } catch (FormatException) {
+            return MatchmakingError.NetworkFailure;
+        }
     }
 
     /// <summary>

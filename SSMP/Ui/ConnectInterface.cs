@@ -1413,6 +1413,15 @@ internal class ConnectInterface {
 
         yield return new WaitUntil(() => task.IsCompleted);
 
+        if (!task.IsCompletedSuccessfully) {
+            CleanupHolePunchSocket(holePunchSocket);
+            Logger.Error(
+                $"ConnectInterface: CreateLobbyAsync failed: {task.Exception?.GetBaseException().Message ?? "cancelled"}"
+            );
+            ShowFeedback(Color.red, "Failed to create lobby. Is MMS running?");
+            yield break;
+        }
+
         var (lobbyId, lobbyName, _) = task.Result;
         if (lobbyId == null || lobbyName == null) {
             if (MmsClient.LastMatchmakingError == MatchmakingError.UpdateRequired) {

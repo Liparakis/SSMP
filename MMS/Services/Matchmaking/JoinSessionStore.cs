@@ -134,6 +134,7 @@ public sealed class JoinSessionStore {
         new() {
             JoinId = metadata.JoinId,
             HostConnectionData = metadata.HostConnectionData,
-            DiscoveredPort = metadata.DiscoveredPort
+            DiscoveredPort = metadata.DiscoveredPort,
+            CreatedAt = metadata.CreatedAt
         };
 }

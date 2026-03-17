@@ -8,7 +8,7 @@ public sealed class DiscoveryTokenMetadata {
     /// The UTC timestamp when this discovery token was created.
     /// Used for automatic cleanup of stale sessions.
     /// </summary>
-    public DateTime CreatedAt { get; } = DateTime.UtcNow;
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
 
     /// <summary>
     /// The external port discovered via UDP. 

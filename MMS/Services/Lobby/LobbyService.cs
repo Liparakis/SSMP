@@ -83,7 +83,7 @@ public class LobbyService(LobbyNameService lobbyNameService) {
         if (!_lobbies.TryGetValue(connectionData, out var lobby)) return null;
         if (!lobby.IsDead) return lobby;
 
-        RemoveLobby(connectionData);
+        RemoveLobby(lobby);
         return null;
     }
 
@@ -91,16 +91,28 @@ public class LobbyService(LobbyNameService lobbyNameService) {
     /// Returns the lobby owned by <paramref name="token"/>, or <see langword="null"/> if absent or expired.
     /// </summary>
     /// <param name="token">The host authentication token issued at lobby creation.</param>
-    public _Lobby? GetLobbyByToken(string token) =>
-        _tokenToConnectionData.TryGetValue(token, out var connData) ? GetLobby(connData) : null;
+    public _Lobby? GetLobbyByToken(string token) {
+        if (!_tokenToConnectionData.TryGetValue(token, out var connData))
+            return null;
+
+        var lobby = GetLobby(connData);
+        return lobby is not null && lobby.HostToken == token ? lobby : null;
+    }
 
     /// <summary>
     /// Returns the lobby identified by <paramref name="code"/>, or <see langword="null"/> if absent or expired.
     /// The lookup is case-insensitive.
     /// </summary>
     /// <param name="code">The player-facing lobby code (e.g. <c>ABC123</c>).</param>
-    public _Lobby? GetLobbyByCode(string code) =>
-        _codeToConnectionData.TryGetValue(code.ToUpperInvariant(), out var connData) ? GetLobby(connData) : null;
+    public _Lobby? GetLobbyByCode(string code) {
+        var normalizedCode = code.ToUpperInvariant();
+        if (!_codeToConnectionData.TryGetValue(normalizedCode, out var connData)) return null;
+
+        var lobby = GetLobby(connData);
+        return (lobby is not null && string.Equals(lobby.LobbyCode, normalizedCode, StringComparison.Ordinal))
+            ? lobby
+            : null;
+    }
 
     /// <summary>
     /// Returns all active public lobbies, optionally filtered by <paramref name="lobbyType"/>.
@@ -151,7 +163,7 @@ public class LobbyService(LobbyNameService lobbyNameService) {
     /// <returns><see langword="true"/> if the lobby was found and removed; <see langword="false"/> otherwise.</returns>
     public bool RemoveLobbyByToken(string token, Action<_Lobby>? onRemoving = null) {
         var lobby = GetLobbyByToken(token);
-        return lobby != null && RemoveLobby(lobby.ConnectionData, onRemoving);
+        return lobby != null && RemoveLobby(lobby, onRemoving);
     }
 
     /// <summary>
@@ -161,22 +173,23 @@ public class LobbyService(LobbyNameService lobbyNameService) {
     /// <returns>The number of lobbies removed.</returns>
     public int CleanupDeadLobbies(Action<_Lobby>? onRemoving = null) {
         var dead = _lobbies.Values.Where(l => l.IsDead).ToList();
-        return dead.Count(lobby => RemoveLobby(lobby.ConnectionData, onRemoving));
+        return dead.Count(lobby => RemoveLobby(lobby, onRemoving));
     }
 
     /// <summary>
     /// Removes a lobby from all indexes and releases its name back to <see cref="LobbyNameService"/>.
     /// </summary>
-    /// <param name="connectionData">The connection identifier the lobby was registered under.</param>
+    /// <param name="lobby">The specific lobby instance to remove.</param>
     /// <param name="onRemoving">Optional callback invoked with the lobby instance before it is removed from all indexes.</param>
     /// <returns><see langword="false"/> if the lobby was not found (already removed).</returns>
-    private bool RemoveLobby(string connectionData, Action<_Lobby>? onRemoving = null) {
-        if (!_lobbies.TryRemove(connectionData, out var lobby)) return false;
+    private bool RemoveLobby(_Lobby lobby, Action<_Lobby>? onRemoving = null) {
+        if (!_lobbies.TryRemove(new KeyValuePair<string, _Lobby>(lobby.ConnectionData, lobby)))
+            return false;
 
         try {
             onRemoving?.Invoke(lobby);
         } catch (Exception ex) {
-            ProgramState.Logger.LogWarning(ex, "Lobby removal callback failed for {ConnectionData}", connectionData);
+            ProgramState.Logger.LogWarning(ex, "Lobby removal callback failed for {ConnectionData}", lobby.ConnectionData);
         } finally {
             _tokenToConnectionData.TryRemove(lobby.HostToken, out _);
             _codeToConnectionData.TryRemove(lobby.LobbyCode, out _);
